@@ -2,8 +2,7 @@
 
 A native **Windows on ARM64** battery tray app: a custom notification-area icon that opens a
 themed, translucent flyout showing charge state, real charge/discharge wattage, and inline
-controls for brightness, refresh rate, Windows power mode, power plan and maximum processor
-state.
+controls for brightness, night light, refresh rate and Windows power mode.
 
 Built specifically because nothing existing does this on ARM64 without x64 emulation.
 
@@ -61,8 +60,8 @@ beside the binary instead of in `%LOCALAPPDATA%\BatteryHud`.
 - **Left-click** the tray icon → the flyout: charge, watts, graph, brightness, refresh rate,
   power mode. `Esc` or clicking away closes it.
 - **Right-click** the tray icon → menu: Settings, *Power & battery* (Windows Settings),
-  *Power Options* (Control Panel), hide the Windows battery icon, start with Windows,
-  open the config folder, exit.
+  *Power Options* (Control Panel), *System tray icons*, start with Windows, open the config
+  folder, exit.
 - **Settings** is a real window with toggles and sliders. Every change applies instantly —
   no OK button, no restart. Editing `config.json` by hand applies instantly too; the two
   paths do not fight each other.
@@ -72,10 +71,9 @@ beside the binary instead of in `%LOCALAPPDATA%\BatteryHud`.
 One control: Efficiency / Balanced / Performance, applying to whichever power source the
 machine is on right now.
 
-There is no pair of dropdowns and nothing stored in config, because Windows already keeps
-the two independently and swaps them itself when the plug moves. The flyout reads the mode
-in force each tick and mirrors it, so plugging in shows your mains mode and unplugging shows
-your battery one, with no bookkeeping on our side.
+Windows keeps a separate mode for mains and battery and swaps them itself when the plug
+moves, so the flyout reads the mode in force each tick and mirrors it: plugging in shows your
+mains mode, unplugging shows your battery one, with no bookkeeping on our side.
 
 Worth knowing about the underlying API, since it constrains what any app can do here:
 
@@ -136,32 +134,9 @@ read-only, and it is how the layout above was established.
 
 ## Hiding the built-in battery icon
 
-**Do this from Windows, not from BatteryHud.** The tray menu has *System tray icons*, which
-opens the classic page at `shell:::{05d7b0f4-2121-4eff-bf6b-ed3f69b894d9}` — Windows 11
-removed every link to it but the shell folder is still registered. Turn Power off there and it
-stays off.
-
-BatteryHud used to offer a toggle for this. It was removed after measuring what actually
-happens, which is worth writing down:
-
-- The obvious mechanism, the `HideSCAPower` policy, is **ignored** by the classic tray that
-  ExplorerPatcher provides. Writing it succeeds and changes nothing.
-- That tray keeps per-icon visibility in
-  `Local Settings\Software\Microsoft\Windows\CurrentVersion\`**`TrayNotSIB`**`\IconStreams` —
-  note `TrayNotSIB`, not the documented `TrayNotify`.
-- The write is **deferred**. Toggling the icon leaves `IconStreams` byte-identical; it is only
-  rewritten when Explorer shuts down. Anything an app writes while Explorer runs is discarded
-  at its next exit.
-- The blob is **ROT-13 obfuscated**. Decoding the head as UTF-16 gives `P:\Cebtenz Svyrf\…`,
-  which is `C:\Program Files\…`. It is the old Win7 format: ~55 KB of undocumented,
-  variable-length records, and the record count shifts between toggles.
-
-Automating it would mean killing Explorer, rewriting a structure that cannot be validated, and
-restarting Explorer — on every toggle, with the user's whole tray layout at stake if a record
-is misparsed. Opening the page that does it safely is the better trade.
-
-`diagnose-trayicon.ps1` is the script that established all of the above: it snapshots several
-HKCU subtrees plus ExplorerPatcher's files, before and after a manual toggle, and diffs them.
+Do this from Windows. The tray menu has *System tray icons*, which opens the classic page at
+`shell:::{05d7b0f4-2121-4eff-bf6b-ed3f69b894d9}` — Windows 11 removed every link to it but the
+shell folder is still registered. Turn Power off there and it stays off.
 
 ## Charge limit
 
@@ -184,15 +159,8 @@ charge from minute to minute.
 
 ## Appearance
 
-One backdrop: the Win10-era acrylic from `SetWindowCompositionAttribute`. Mica, Mica Alt and
-the DWM acrylic backdrop were all tried and removed — they give no tint control and did not
-behave reliably. The accent API takes a single ARGB tint, which is exactly what the three
-controls drive:
-
-The app is **dark only**. A light palette was removed: it never read well against an acrylic
-backdrop tinted for dark, and keeping two sets of colours in step was not worth the trouble.
-The tray icon still follows the *taskbar* theme, which is a separate Windows setting from the
-app theme, so it stays legible on a light taskbar.
+The backdrop is the Win10-era acrylic from `SetWindowCompositionAttribute`, which takes a
+single ARGB tint. Three controls drive it:
 
 - **Glass colour** — the tint blended over the blurred wallpaper. Full HSV picker.
 - **Transparency** — the alpha of that tint. 0 is a solid colour, 100 is pure blur with no tint.
@@ -202,6 +170,9 @@ app theme, so it stays legible on a light taskbar.
 
 If the compositor refuses to blur, the window falls back to an opaque `GlassColor` rather
 than rendering transparent-black.
+
+The app is **dark only**. The tray icon follows the *taskbar* theme, which is a separate
+Windows setting, so it stays legible on a light taskbar.
 
 **Accent colour** has the same picker and drives sliders, selected segments and the battery
 level bar. Picking one clears *Follow Windows accent colour* automatically. The level bar
@@ -296,7 +267,7 @@ src/
   Program.cs           entry point, tray icon, poll loop, config/theme reload
   Native.cs            every P/Invoke and native struct, in one place
   Config.cs            config model, JSON load/save, hot-reload watcher, logging
-  Theme.cs             Windows dark/light + accent detection, Palette resolution
+  Theme.cs             accent + taskbar-theme detection, Palette resolution
   BatteryService.cs    battery IOCTLs, sampling, rate smoothing, session stats, CSV
   PowerModeService.cs  Windows 11 power mode overlay, per power source
   DisplayService.cs    display enumeration and refresh-rate switching
@@ -310,7 +281,7 @@ src/
   FlyoutWindow.cs      the left-click panel
   TrayMenuWindow.cs    the right-click menu
   SettingsWindow.cs    the settings GUI
-  ShellIntegration.cs  HideSCAPower policy, Explorer restart, autostart, OS links
+  ShellIntegration.cs  autostart and links to the Windows pages
 ```
 
 Nothing is templated in XAML: every control draws itself in `OnRender`, so the whole look is

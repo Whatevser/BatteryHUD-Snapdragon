@@ -9,14 +9,8 @@ namespace BatteryHud;
 /// <summary>
 /// Shell odds and ends: autostart and shortcuts to the OS pages.
 ///
-/// There is deliberately no "hide the built-in battery icon" function here. The obvious
-/// candidate, the HideSCAPower policy, is ignored by the classic tray ExplorerPatcher
-/// provides. That tray keeps per-icon visibility in
-/// Local Settings\...\CurrentVersion\TrayNotSIB\IconStreams, which is a ROT-13 obfuscated
-/// ~55 KB blob of variable-length records that Explorer reads only at startup and writes
-/// only at shutdown. Changing it from a running app would mean killing Explorer, rewriting
-/// a structure we cannot validate, and restarting Explorer - risking the user's entire tray
-/// layout, every time. OpenNotificationAreaIcons points at the page that does it safely.
+/// Hiding the built-in battery icon is left to Windows: OpenNotificationAreaIcons points at
+/// the classic page that does it.
 /// </summary>
 public static class ShellIntegration
 {

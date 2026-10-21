@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <!--
+      MUST stay disabled. With UseWPF and UseWindowsForms both on, implicit usings pull in
+      System.Drawing + System.Windows.Forms *and* System.Windows.Media + System.Windows.Controls,
+      which makes Color, Brush, FontFamily, Panel, MouseEventArgs and Application ambiguous
+      in every file. Each source file declares exactly the namespaces it needs instead.
+    -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>BatteryHud</AssemblyName>
+    <RootNamespace>BatteryHud</RootNamespace>
+    <StartupObject>BatteryHud.Program</StartupObject>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!-- ARM64 first. win-x64 kept only so the project can be built on an x64 dev box. -->
+    <RuntimeIdentifiers>win-arm64;win-x64</RuntimeIdentifiers>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <!-- Reflection-based JSON config + WPF: do not trim. -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <SelfContained>false</SelfContained>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <DebugType>embedded</DebugType>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,98 @@
+// Reference copy of every setting, with defaults. Most of these also have a control in
+// the Settings window (right-click the tray icon -> Settings). The live file is
+// %LOCALAPPDATA%\BatteryHud\config.json, or next to the exe when portable.txt exists.
+// Comments and trailing commas are fine. Saving applies immediately - no restart.
+{
+  "General": {
+    "PollIntervalMs": 1000,
+    "HistorySamples": 900,
+    "RateSmoothingSamples": 6,
+    "DerivedRateWindowSeconds": 45,   // fallback dCapacity/dt window if firmware reports no rate
+    "UseWatts": true,
+    "PowerDecimals": 1,
+    "CloseOnFocusLost": true
+  },
+
+  "Appearance": {
+    // The app is dark only. A light palette was removed: it never looked right against an
+    // acrylic backdrop tinted for dark, and maintaining two sets of colours was not worth it.
+    // The TRAY ICON still follows the taskbar theme, which is a separate Windows setting.
+    "FollowSystemAccent": true,
+    "AccentColor": "#FF4CC2FF",       // picked in Settings; FollowSystemAccent must be false
+
+    // Backdrop is always Win10-style acrylic (SetWindowCompositionAttribute).
+    "GlassColor": "#FF1B1B1B",        // tint blended over the blurred wallpaper
+    "Transparency": 45,               // 0 = solid tint, 100 = pure blur, no tint
+    "GlassEffect": 25,                // extra white frost painted over the blur
+
+    "Foreground": "#FFFFFFFF",
+    "SubtleForeground": "#99FFFFFF",
+    "Separator": "#22FFFFFF",
+    "ControlFill": "#18FFFFFF",
+    "ControlFillHover": "#28FFFFFF",
+
+    "ChargingColor": "#FF4ADE80",
+    "DischargingColor": "",           // BLANK = follow the accent colour. This is the
+                                      // battery level bar and the discharge graph.
+    "LowColor": "#FFFFB020",
+    "CriticalColor": "#FFFF4D4F",
+
+    "FontFamily": "Segoe UI Variable Text, Segoe UI",
+    "FontSize": 12.5,
+    "HeadlineFontSize": 30,
+
+    "CornerRadius": 10,
+    "Width": 330,
+    "Padding": 14,
+    "RowSpacing": 8,
+    "EdgeMargin": 12,
+    "BorderColor": "none",
+
+    "SparklineHeight": 42
+  },
+
+  "Tray": {
+    "IconStyle": "battery",           // battery | batteryvertical
+    "IconSize": 0,                    // 0 = derive from DPI
+    "ColorByState": true,
+    "ForegroundColor": "auto",        // used when ColorByState is false
+    "LowThreshold": 25,
+    "CriticalThreshold": 10,
+    "ShowChargingGlyph": true,
+    "ChargingGlyph": "plug",          // plug | bolt
+    "OutlineScale": 1.0
+  },
+
+  "Sections": {
+    "Battery": true,                  // percentage, state, time left, watts, voltage
+    "Graph": true,                    // the history sparkline, toggled independently
+    "BatteryHealth": false,           // health % / cycle count / chemistry line
+    "Brightness": true,
+    "NightLight": true,               // night light switch, next to the brightness slider
+    "RefreshRate": true,
+    "PowerMode": true,
+    "ChargerSession": true,
+    "ExternalMonitorBrightness": false,
+    "PreferredRefreshRates": [],      // e.g. [60, 120] to hide the rest
+    "BrightnessStep": 5
+  },
+
+  // Rescales what you SEE when an OEM utility caps charging below 100%. Purely a display
+  // remap - BatteryHud does not and cannot change the cap itself.
+  //
+  // Percent, not watt-hours: OEM caps are configured in percent, and FullChargedCapacity
+  // falls as the pack wears, so a fixed Wh threshold slowly drifts away from whatever the
+  // OEM tool actually enforces. Voltage would be worse - the charge curve is nonlinear and
+  // moves with load and temperature.
+  "ChargeLimit": {
+    "Enabled": false,
+    "Percent": 80,               // any whole percent, not just multiples of 5
+    "ShowActual": true              // adds "78% actual - 80% cap" to the detail line
+  },
+
+  "Logging": {
+    "CsvEnabled": false,
+    "CsvPath": "",
+    "CsvOnlyWhileCharging": true
+  }
+}

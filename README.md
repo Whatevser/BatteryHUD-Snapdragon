@@ -140,12 +140,17 @@ shell folder is still registered. Turn Power off there and it stays off.
 
 ## Charge limit
 
-One switch. It asks the ASUS firmware to stop charging at 80%, and shows 80% as 100% so the
-battery does not look permanently part-charged.
+Two switches that do not depend on each other:
 
-Those are deliberately not two settings. The display half keeps working when the firmware
-write does not — which is the normal case if MyASUS already owns the cap, or if the firmware
-refuses (see below). Whatever happens, the number on screen is right.
+- **Limit charging to 80%** — asks the ASUS firmware to stop charging there.
+- **Show 80% as 100%** — display only, for when something else owns the cap and you would
+  rather not stare at a battery that never fills.
+
+They are separate because the cap is usually owned by MyASUS, in which case only the second
+is actually yours to control.
+
+Both the ATK WMI class and the registry store need **administrator**; a non-elevated run gets
+"access denied" and the hardware half is unavailable.
 
 ### How it works
 
@@ -171,15 +176,20 @@ known to honour. `Percent` in `config.json` takes 60 as well, which ASUS also of
 ### Measured caveat
 
 On a Vivobook S 15 S5507QAD (ARM64, SCI v3.2.72.0) the ATK transport is fully present — the
-WMI class, `DEVS`/`DSTS` and `\\.\ATKACPI` all work — but `DEVS 0x00120057` returns **0**,
-which in this interface means "device not supported" (1 = accepted). On that firmware the
-ACPI path does nothing and only the registry path remains, applying when the ASUS service next
-acts rather than immediately.
+WMI class, `DEVS`/`DSTS` and `\\.\ATKACPI` all work when elevated — but the firmware
+implements **none** of the battery devices. A read-only `DSTS` sweep of
+`0x00120050`–`0x00120070` reports nothing implemented, and `DEVS 0x00120057` returns **0**,
+which in this interface means "device not supported" (1 = accepted).
 
-Settings reports which path actually took effect rather than claiming success. At startup the
-app logs a read-only `DSTS` sweep of `0x00120050`–`0x00120070` so the correct device ID can be
-identified if one exists. It never writes to an ID whose meaning is unconfirmed — `DEVS` is a
-generic setter keyed on a number, and a wrong ID would poke an unrelated subsystem.
+So on that machine BatteryHud cannot set the cap, and says so rather than offering a switch
+that silently does nothing. The hardware toggle is dimmed, the reason is spelled out, and the
+display switch stays available. Set the cap in MyASUS.
+
+The first refusal is remembered, so the ACPI call is not repeated on every change — otherwise
+the log fills with identical failures.
+
+BatteryHud never writes to a device ID whose meaning is unconfirmed: `DEVS` is a generic
+setter keyed on a number, and a wrong ID would poke an unrelated subsystem.
 
 ### Charge to full once
 

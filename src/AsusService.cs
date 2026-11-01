@@ -73,6 +73,36 @@ public static class AsusService
 
     private static bool? _available;
     private static bool _scanned;
+    private static bool? _firmwareImplementsLimit;
+    private static bool? _elevated;
+
+    /// <summary>
+    /// The ATK WMI class refuses non-elevated callers with "access denied", so a
+    /// non-admin run looks identical to "no ASUS machine" unless this is checked.
+    /// </summary>
+    public static bool IsElevated
+    {
+        get
+        {
+            if (_elevated.HasValue) return _elevated.Value;
+            try
+            {
+                using var id = System.Security.Principal.WindowsIdentity.GetCurrent();
+                var p = new System.Security.Principal.WindowsPrincipal(id);
+                _elevated = p.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+            }
+            catch { _elevated = false; }
+            return _elevated!.Value;
+        }
+    }
+
+    /// <summary>
+    /// False once the firmware has told us it does not implement the charge-limit device.
+    /// Null until we have asked. Measured on an S5507QAD: DSTS reports nothing implemented
+    /// in the whole 0x00120050-0x00120070 range and DEVS 0x00120057 always returns 0, so
+    /// there is no point calling it again every time the limit changes.
+    /// </summary>
+    public static bool? FirmwareImplementsLimit => _firmwareImplementsLimit;
 
     // ------------------------------------------------------------- availability
 
@@ -101,7 +131,8 @@ public static class AsusService
             }
             catch (Exception ex)
             {
-                Log.Warn($"asus: {WmiClass}/DEVS not available: {ex.Message}");
+                Log.Warn($"asus: {WmiClass}/DEVS not available: {ex.Message}"
+                         + (IsElevated ? "" : " (not running as administrator)"));
             }
 
             Log.Info($"asus interface available: {_available}");
@@ -150,13 +181,32 @@ public static class AsusService
 
         if (!Available)
             return new ChargeLimitResult(ChargeLimitOutcome.Unavailable, percent,
-                "No ASUS ATK interface. Install ASUS System Control Interface.");
+                IsElevated
+                    ? "No ASUS ATK interface. Needs ASUS System Control Interface installed."
+                    : "The ASUS interface refused a non-elevated caller. Run BatteryHud as "
+                      + "administrator to change the charge limit.");
 
         ScanCapabilitiesOnce();
 
-        // 1. ACPI. Where the firmware implements the device this is immediate.
-        int rc = InvokeDevs(DevIdChargeLimit, (uint)percent);
-        bool firmwareTook = rc == 1;
+        // 1. ACPI, unless the firmware has already said it does not implement the device.
+        //    Re-asking on every change just fills the log with identical refusals.
+        bool firmwareTook = false;
+        int rc = 0;
+        if (_firmwareImplementsLimit != false)
+        {
+            rc = InvokeDevs(DevIdChargeLimit, (uint)percent);
+            firmwareTook = rc == 1;
+            if (!firmwareTook && _firmwareImplementsLimit is null)
+            {
+                _firmwareImplementsLimit = false;
+                Log.Warn($"asus: firmware does not implement 0x{DevIdChargeLimit:X8} " +
+                         "(DEVS returned " + rc + "); falling back to the ASUS service store");
+            }
+            else if (firmwareTook)
+            {
+                _firmwareImplementsLimit = true;
+            }
+        }
 
         // 2. The service's store, so it does not re-assert an older value over the top.
         bool stored = WriteServiceLimit(percent);
@@ -295,9 +345,18 @@ public static class AsusService
                 if ((raw & 0x10000) != 0) supported.Add($"0x{id:X8} (unknown) raw=0x{raw:X}");
             }
 
-            Log.Info(supported.Count == 0
-                ? "asus DSTS scan: no device in 0x00120050-0x00120070 is implemented"
-                : "asus DSTS scan, implemented devices: " + string.Join(" | ", supported));
+            if (supported.Count == 0)
+            {
+                // Nothing in the battery subgroup exists, so the charge-limit device will
+                // not either. Recorded so the UI can say that plainly instead of offering
+                // a switch that cannot work.
+                _firmwareImplementsLimit = false;
+                Log.Info("asus DSTS scan: no device in 0x00120050-0x00120070 is implemented");
+            }
+            else
+            {
+                Log.Info("asus DSTS scan, implemented devices: " + string.Join(" | ", supported));
+            }
         }
         catch (Exception ex) { Log.Warn($"asus DSTS scan: {ex.Message}"); }
     }

@@ -186,8 +186,8 @@ public sealed class SettingsWindow : HudWindow
         ToggleRow("Colour icon by charge state", "Green charging, amber low, red critical",
             t.ColorByState, v => { t.ColorByState = v; Apply(); });
 
-        SliderRow("Low threshold", 5, 50, 1, t.LowThreshold, v => { t.LowThreshold = (int)v; Apply(); }, v => $"{v:0}%");
-        SliderRow("Critical threshold", 1, 30, 1, t.CriticalThreshold, v => { t.CriticalThreshold = (int)v; Apply(); }, v => $"{v:0}%");
+        SliderRow("Low threshold", 5, 50, 1, t.LowThreshold, v => { t.LowThreshold = (int)Math.Round(v); Apply(); }, v => $"{v:0}%");
+        SliderRow("Critical threshold", 1, 30, 1, t.CriticalThreshold, v => { t.CriticalThreshold = (int)Math.Round(v); Apply(); }, v => $"{v:0}%");
         SliderRow("Outline thickness", 0.6, 1.6, 0.05, t.OutlineScale, v => { t.OutlineScale = v; Apply(); }, v => $"{v:0.00}×");
 
         // ------------------------------------------------------------ sections
@@ -218,7 +218,7 @@ public sealed class SettingsWindow : HudWindow
             i => { g.PollIntervalMs = intervals[i]; Apply(); });
 
         SliderRow("Rate smoothing", 1, 20, 1, g.RateSmoothingSamples,
-            v => { g.RateSmoothingSamples = (int)v; Apply(); }, v => $"{v:0} samples");
+            v => { g.RateSmoothingSamples = (int)Math.Round(v); Apply(); }, v => $"{v:0} samples");
 
         ToggleRow("Show watts instead of milliwatts", null, g.UseWatts, v => { g.UseWatts = v; Apply(); });
         ToggleRow("Close flyout when it loses focus", null, g.CloseOnFocusLost, v => { g.CloseOnFocusLost = v; Apply(); });
@@ -240,9 +240,9 @@ public sealed class SettingsWindow : HudWindow
     }
 
     /// <summary>
-    /// The charge limit. One switch: it asks the ASUS firmware to stop charging at the
-    /// configured percentage, and shows that percentage as 100% so the battery does not
-    /// look stuck. The display half still works when the firmware write does not.
+    /// The charge limit, as two switches that do not depend on each other: one asks the
+    /// firmware to stop charging, one rescales the display. The cap is often owned by
+    /// MyASUS rather than by us, in which case only the second is ours to control.
     /// </summary>
     private void BuildChargeLimitSection()
     {
@@ -254,6 +254,8 @@ public sealed class SettingsWindow : HudWindow
         status.TextWrapping = TextWrapping.Wrap;
         status.Margin = new Thickness(0, 6, 0, 0);
 
+        bool canSetHardware = AsusService.Available && AsusService.FirmwareImplementsLimit != false;
+
         int? stored = AsusService.Available ? AsusService.ReadLimit() : null;
         if (stored.HasValue)
         {
@@ -264,8 +266,10 @@ public sealed class SettingsWindow : HudWindow
             _body.Children.Add(found);
         }
 
-        ToggleRow($"Limit charging to {cl.Percent}%",
-            $"Stops charging at {cl.Percent}%, and shows {cl.Percent}% as full.",
+        // ---- hardware
+        var hw = ToggleRowReturning($"Limit charging to {cl.Percent}%",
+            canSetHardware ? $"Asks the firmware to stop charging at {cl.Percent}%."
+                           : "Not available on this machine - see below.",
             cl.Enabled, v =>
             {
                 cl.Enabled = v;
@@ -273,45 +277,61 @@ public sealed class SettingsWindow : HudWindow
                 status.Text = v ? ApplyHardwareLimit(cl.Percent)
                                 : ApplyHardwareLimit(AsusService.MaxLimit, removing: true);
             });
+        if (!canSetHardware) hw.Opacity = 0.5;
 
-        ToggleRow("Charge to full once",
-            "Lifts the limit until the battery is full, then puts it back.",
-            AsusService.BypassActive, v =>
-            {
-                if (!AsusService.Available)
-                {
-                    status.Text = "Needs the ASUS interface; not available on this machine.";
-                    return;
-                }
-                if (v)
-                {
-                    var r = AsusService.BeginChargeToFull(cl.Percent);
-                    status.Text = "Charging to full once. " + r.Detail;
-                }
-                else
-                {
-                    AsusService.CancelChargeToFull();
-                    status.Text = $"Cancelled; limit back to {cl.Percent}%.";
-                }
-            });
+        // ---- display, deliberately independent of the above
+        ToggleRow($"Show {cl.Percent}% as 100%",
+            "Display only. Use it when something else caps the battery and you would "
+            + "rather not stare at a number that never reaches full.",
+            cl.ShowAsFull, v => { cl.ShowAsFull = v; Apply(); });
 
         ToggleRow("Show the true percentage too", "Adds \"78% actual\" to the detail line",
             cl.ShowActual, v => { cl.ShowActual = v; Apply(); });
 
-        ToggleRow("Re-apply after plug/unplug and restart",
-            "The BIOS drops the limit on restart and the ASUS service can overwrite it. "
-            + "Leave this on or the setting will not stick.",
-            cl.ReapplyOnPowerChange, v => { cl.ReapplyOnPowerChange = v; Apply(); });
+        // ---- one-time bypass, only meaningful if we can move the limit at all
+        if (canSetHardware)
+        {
+            ToggleRow("Charge to full once",
+                "Lifts the limit until the battery is full, then puts it back.",
+                AsusService.BypassActive, v =>
+                {
+                    if (v)
+                    {
+                        var r = AsusService.BeginChargeToFull(cl.Percent);
+                        status.Text = "Charging to full once. " + r.Detail;
+                    }
+                    else
+                    {
+                        AsusService.CancelChargeToFull();
+                        status.Text = $"Cancelled; limit back to {cl.Percent}%.";
+                    }
+                });
+
+            ToggleRow("Re-apply after plug/unplug and restart",
+                "The BIOS drops the limit on restart and the ASUS service can overwrite it.",
+                cl.ReapplyOnPowerChange, v => { cl.ReapplyOnPowerChange = v; Apply(); });
+        }
 
         _body.Children.Add(status);
 
-        if (!AsusService.Available)
+        // ---- say plainly why the hardware half is off, when it is
+        string? why = null;
+        if (!AsusService.Available && !AsusService.IsElevated)
+            why = "The ASUS interface refuses non-elevated callers, so the hardware limit is "
+                + "unavailable. Run BatteryHud as administrator if you want it.";
+        else if (!AsusService.Available)
+            why = "No ASUS charge-limit interface on this machine. Whatever already caps the "
+                + "battery keeps doing it; the display switch above still works.";
+        else if (AsusService.FirmwareImplementsLimit == false)
+            why = "This firmware does not implement the ASUS charge-limit device, so BatteryHud "
+                + "cannot set the cap. Set it in MyASUS instead - the display switch above will "
+                + "still show it as full.";
+
+        if (why is not null)
         {
-            var note = Ui.Text("No ASUS charge-limit interface found, so the switch only changes "
-                             + "what is displayed. Whatever already caps your battery keeps doing it.",
-                Pal.SubtleBrush, _fs - 2, _font);
+            var note = Ui.Text(why, Pal.SubtleBrush, _fs - 2, _font);
             note.TextWrapping = TextWrapping.Wrap;
-            note.Opacity = 0.75;
+            note.Opacity = 0.8;
             note.Margin = new Thickness(0, 8, 0, 0);
             _body.Children.Add(note);
         }
@@ -376,6 +396,10 @@ public sealed class SettingsWindow : HudWindow
         => new() { LastChildFill = true, Margin = new Thickness(0, 8, 0, 0) };
 
     private void ToggleRow(string label, string? hint, bool value, Action<bool> set)
+        => ToggleRowReturning(label, hint, value, set);
+
+    /// <summary>ToggleRow, but hands the row back so the caller can dim it.</summary>
+    private DockPanel ToggleRowReturning(string label, string? hint, bool value, Action<bool> set)
     {
         var row = NewRow();
         var toggle = new ToggleSwitch
@@ -390,6 +414,7 @@ public sealed class SettingsWindow : HudWindow
         row.Children.Add(toggle);
         row.Children.Add(LabelBlock(label, hint));
         _body.Children.Add(row);
+        return row;
     }
 
     private void SliderRow(string label, double min, double max, double step, double value,

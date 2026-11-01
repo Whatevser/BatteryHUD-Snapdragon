@@ -75,7 +75,7 @@ public sealed class BatteryService : IDisposable
         get
         {
             var c = _cfg.ChargeLimit;
-            if (!c.Enabled) return 1.0;
+            if (!c.ShowAsFull) return 1.0;
             return Math.Clamp(c.Percent, 40, 100) / 100.0;
         }
     }

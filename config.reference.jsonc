@@ -76,17 +76,19 @@
     "BrightnessStep": 5
   },
 
-  // The charge limit. One switch, two effects: it asks the ASUS firmware to stop charging
-  // at Percent, and shows Percent as 100% so the battery does not look part-charged.
+  // Two independent switches. Enabled asks the ASUS firmware to stop charging at Percent;
+  // ShowAsFull shows Percent as 100% so the battery does not look part-charged.
   //
-  // The display half works even if the firmware write fails - which matters when MyASUS
-  // already owns the cap. Needs ASUS System Control Interface for the hardware half;
-  // writing the ASUS service's stored value needs administrator.
+  // Separate because the cap is often owned by MyASUS rather than by BatteryHud, and
+  // whether you want the display rescaled is a different question from who set the cap.
+  // The hardware half needs ASUS System Control Interface AND administrator - the ATK WMI
+  // class refuses non-elevated callers.
   //
   // Percent, not watt-hours: full capacity falls as the pack wears, so a fixed Wh figure
   // would drift away from the cap it is meant to match.
   "ChargeLimit": {
-    "Enabled": false,
+    "Enabled": false,               // ask the ASUS firmware to stop charging at Percent
+    "ShowAsFull": false,            // show Percent as 100% - display only, independent
     "Percent": 80,                  // the UI only offers 80; 60 also works if you edit it
     "ShowActual": true,             // adds "78% actual" to the detail line
     "ReapplyOnPowerChange": true    // BIOS drops the limit on restart; leave this on

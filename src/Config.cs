@@ -146,8 +146,15 @@ public sealed class SectionSettings
 /// </summary>
 public sealed class ChargeLimitSettings
 {
-    /// <summary>Off by default.</summary>
+    /// <summary>Ask the ASUS firmware to stop charging at Percent. Off by default.</summary>
     public bool Enabled { get; set; } = false;
+
+    /// <summary>
+    /// Show Percent as 100%. Independent of Enabled on purpose: the cap is often set by
+    /// MyASUS rather than by us, and whether you want the display rescaled is a separate
+    /// question from who set the cap.
+    /// </summary>
+    public bool ShowAsFull { get; set; } = false;
 
     /// <summary>
     /// Where charging stops, and what reads as 100%. 80 is the only value the UI offers -

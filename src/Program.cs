@@ -255,7 +255,9 @@ public sealed class HudApp : Application
         {
             OpenSettings = OpenSettings,
             ChargeToFullOnce = ToggleChargeToFull,
-            ChargeToFullAvailable = () => AsusService.Available && _cfg.ChargeLimit.Enabled,
+            ChargeToFullAvailable = () => AsusService.Available
+                                          && AsusService.FirmwareImplementsLimit != false
+                                          && _cfg.ChargeLimit.Enabled,
             ChargeToFullActive = () => AsusService.BypassActive,
             OpenWindowsPowerSettings = ShellIntegration.OpenWindowsPowerSettings,
             OpenControlPanelPowerOptions = ShellIntegration.OpenControlPanelPowerOptions,

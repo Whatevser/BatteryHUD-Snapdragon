@@ -208,7 +208,16 @@ public static class ConfigStore
 
     public static string FilePath => Path.Combine(Directory, "config.json");
 
-    public static AppConfig Load()
+    /// <summary>Startup load: never fails, falls back to defaults.</summary>
+    public static AppConfig Load() => TryLoad() ?? new AppConfig();
+
+    /// <summary>
+    /// Null when the file exists but cannot be read or parsed. The hot-reload path relies on
+    /// that: a hand edit that is half-saved or has a typo must not swap the live config for
+    /// defaults, because the next Settings change would then write those defaults over the
+    /// user's file.
+    /// </summary>
+    public static AppConfig? TryLoad()
     {
         try
         {
@@ -219,13 +228,30 @@ public static class ConfigStore
                 Save(fresh);
                 return fresh;
             }
-            return JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(FilePath), Options) ?? new AppConfig();
+            var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(FilePath), Options);
+            return cfg is null ? null : Normalize(cfg);
         }
         catch (Exception ex)
         {
             Log.Warn($"config load failed: {ex.Message}");
-            return new AppConfig();
+            return null;
         }
+    }
+
+    /// <summary>
+    /// JSON can say "Appearance": null or "PreferredRefreshRates": null. The rest of the app
+    /// assumes every section exists, so put the defaults back rather than crash later.
+    /// </summary>
+    private static AppConfig Normalize(AppConfig c)
+    {
+        c.General ??= new();
+        c.Appearance ??= new();
+        c.Tray ??= new();
+        c.Sections ??= new();
+        c.ChargeLimit ??= new();
+        c.Logging ??= new();
+        c.Sections.PreferredRefreshRates ??= Array.Empty<int>();
+        return c;
     }
 
     public static void Save(AppConfig cfg)

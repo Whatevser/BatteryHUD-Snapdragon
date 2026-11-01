@@ -112,33 +112,45 @@ public static class AsusService
         get
         {
             if (_available.HasValue) return _available.Value;
-            _available = false;
-            try
-            {
-                using var searcher = new ManagementObjectSearcher(WmiScope, $"SELECT * FROM {WmiClass}");
-                foreach (ManagementObject mo in searcher.Get())
-                {
-                    using (mo)
-                    {
-                        // Having the class is not enough, it must expose DEVS. Asking for
-                        // the method's parameters throws when the method is absent, which
-                        // is a cheaper and more direct test than walking a method list.
-                        using var probe = mo.GetMethodParameters("DEVS");
-                        _available = probe is not null;
-                    }
-                    break;
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Warn($"asus: {WmiClass}/DEVS not available: {ex.Message}"
-                         + (IsElevated ? "" : " (not running as administrator)"));
-            }
 
-            Log.Info($"asus interface available: {_available}");
-            return _available.Value;
+            // The startup task and the UI thread both ask this. Without the lock the second
+            // caller can get in while the first is still probing and read a premature
+            // "false", which the Settings window then reports as "no ASUS interface".
+            lock (ProbeGate)
+            {
+                if (_available.HasValue) return _available.Value;
+                bool found = false;
+                try
+                {
+                    using var searcher = new ManagementObjectSearcher(WmiScope, $"SELECT * FROM {WmiClass}");
+                    foreach (ManagementObject mo in searcher.Get())
+                    {
+                        using (mo)
+                        {
+                            // Having the class is not enough, it must expose DEVS. Asking for
+                            // the method's parameters throws when the method is absent, which
+                            // is a cheaper and more direct test than walking a method list.
+                            using var probe = mo.GetMethodParameters("DEVS");
+                            found = probe is not null;
+                        }
+                        break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn($"asus: {WmiClass}/DEVS not available: {ex.Message}"
+                             + (IsElevated ? "" : " (not running as administrator)"));
+                }
+
+                _available = found;
+                Log.Info($"asus interface available: {found}");
+                return found;
+            }
         }
     }
+
+    private static readonly object ProbeGate = new();
+    private static readonly object ScanGate = new();
 
     /// <summary>True when the ASUS service's own limit store exists.</summary>
     public static bool ServiceStorePresent
@@ -316,10 +328,19 @@ public static class AsusService
     /// </summary>
     public static void ScanCapabilitiesOnce()
     {
-        if (_scanned) return;
-        _scanned = true;
-        if (!Available) return;
+        // Locked so a SetLimit arriving mid-scan waits for the verdict instead of seeing
+        // _scanned already true with _firmwareImplementsLimit still unset.
+        lock (ScanGate)
+        {
+            if (_scanned) return;
+            _scanned = true;
+            if (!Available) return;
+            ScanCore();
+        }
+    }
 
+    private static void ScanCore()
+    {
         try
         {
             var known = new Dictionary<uint, string>

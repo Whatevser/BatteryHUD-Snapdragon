@@ -324,8 +324,10 @@ public sealed class FlyoutWindow : HudWindow
             {
                 try
                 {
-                    if (!DisplayService.SetRefreshRate(device, rates[i]))
-                        bar.Select(selected, Pal, raise: false);
+                    // Track the rate actually in force, so a later rejected change reverts
+                    // to it rather than to whatever was active when the flyout was built.
+                    if (DisplayService.SetRefreshRate(device, rates[i])) selected = i;
+                    else bar.Select(selected, Pal, raise: false);
                 }
                 catch (Exception ex)
                 {

@@ -315,12 +315,15 @@ public sealed class HudApp : Application
             return;
         }
         DestroySettings();
-        _settings = new SettingsWindow(_cfg, _pal, SaveAndApply, ResetToDefaults,
+        var window = new SettingsWindow(_cfg, _pal, SaveAndApply, ResetToDefaults,
             ShellIntegration.OpenConfigFolder,
             ShellIntegration.RunAtLoginEnabled,
             () => ShellIntegration.SetRunAtLogin(!ShellIntegration.RunAtLoginEnabled()));
-        _settings.Closed += (_, _) => _settings = null;
-        _settings.ShowCentred();
+        // Only forget the window if it is still the current one; an older instance closing
+        // late must not orphan its replacement.
+        window.Closed += (_, _) => { if (ReferenceEquals(_settings, window)) _settings = null; };
+        _settings = window;
+        window.ShowCentred();
     }
 
     private void DestroySettings()
@@ -332,6 +335,10 @@ public sealed class HudApp : Application
 
     private void ResetToDefaults()
     {
+        // The open Settings window edits the old AppConfig instance. It has to go before the
+        // config is replaced, or OpenSettings below just re-activates it and every further
+        // change lands on an object nothing reads any more.
+        DestroySettings();
         _cfg = new AppConfig();
         SaveAndApply();
         OpenSettings();
@@ -357,8 +364,25 @@ public sealed class HudApp : Application
 
     private void ReloadConfigFromDisk()
     {
-        _cfg = ConfigStore.Load();
+        var loaded = ConfigStore.TryLoad();
+        if (loaded is null)
+        {
+            // Half-saved or invalid JSON. Keep running on what we have; the next good save
+            // of the file triggers another reload.
+            Log.Warn("config.json could not be parsed; keeping the current settings");
+            return;
+        }
+
+        _cfg = loaded;
         ApplyConfig();
+
+        // The Settings window mutates the AppConfig it was built with. After a reload that is
+        // no longer _cfg, so without a rebuild its edits would be saved nowhere.
+        if (_settings is { IsVisible: true })
+        {
+            DestroySettings();
+            OpenSettings();
+        }
         Log.Info("config reloaded from disk");
     }
 

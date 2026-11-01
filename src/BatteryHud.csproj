@@ -2,8 +2,13 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
-    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <!--
+      Plain net10.0-windows, no Windows SDK version suffix. A versioned TFM such as
+      net10.0-windows10.0.19041.0 pulls in the C#/WinRT projections (Microsoft.Windows.SDK.NET.dll,
+      ~25 MB) and bundles them into the single-file exe. Nothing here uses WinRT - everything is
+      Win32 P/Invoke, WMI and the registry - so that was 25 MB of dead weight.
+    -->
+    <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
@@ -15,6 +20,13 @@
       in every file. Each source file declares exactly the namespaces it needs instead.
     -->
     <ImplicitUsings>disable</ImplicitUsings>
+    <!--
+      WFO0003 (WFAC010 before .NET 10) is the WinForms analyzer asking for DPI mode to come from
+      Application.SetHighDpiMode. That API only governs WinForms windows; every window here is
+      WPF (WinForms supplies NotifyIcon and nothing else), and WPF takes its DPI awareness
+      from the manifest. The manifest is the correct place.
+    -->
+    <NoWarn>$(NoWarn);WFAC010;WFO0003</NoWarn>
     <AssemblyName>BatteryHud</AssemblyName>
     <RootNamespace>BatteryHud</RootNamespace>
     <StartupObject>BatteryHud.Program</StartupObject>
@@ -30,9 +42,9 @@
     <PublishTrimmed>false</PublishTrimmed>
 
     <!--
-      Framework-dependent on purpose: the .NET 8 Desktop Runtime carries WPF and WinForms,
+      Framework-dependent on purpose: the .NET 10 Desktop Runtime carries WPF and WinForms,
       so the published exe only has to hold our own code plus System.Management. That is
-      what keeps it well under a megabyte; self-contained would be ~90 MB.
+      what keeps it around a megabyte; self-contained is far larger.
     -->
     <SelfContained>false</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -44,11 +56,11 @@
       keeps line numbers in the log if you want them and is deletable if you do not.
     -->
     <DebugType>portable</DebugType>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="System.Management" Version="8.0.0" />
+    <PackageReference Include="System.Management" Version="10.0.14" />
   </ItemGroup>
 
 </Project>

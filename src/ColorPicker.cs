@@ -283,6 +283,14 @@ public sealed class ColorPickerPanel : StackPanel
         string t = _hex.Text.Trim();
         if (!t.StartsWith("#", StringComparison.Ordinal)) t = "#" + t;
         var parsed = ConfigStore.ParseColor(t, Value);
+        // LostFocus runs this too. Committing an unchanged value is not harmless: the accent
+        // row's commit also turns off "Follow Windows accent colour", so merely clicking into
+        // the hex box and away again would flip that setting.
+        if (parsed == Value)
+        {
+            _hex.Text = ConfigStore.ToHex(Value);
+            return;
+        }
         SetValue(parsed, commit: true);
     }
 

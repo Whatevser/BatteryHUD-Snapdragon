@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -44,6 +45,7 @@ public sealed class BatteryService : IDisposable
     private readonly List<BatterySample> _history = new();
     private readonly object _gate = new();
     private AppConfig _cfg;
+    private DateTime _nextOpenAttempt = DateTime.MinValue;
 
     public BatteryStatic? Info { get; private set; }
     public IReadOnlyList<BatterySample> History { get { lock (_gate) return _history.ToArray(); } }
@@ -114,8 +116,14 @@ public sealed class BatteryService : IDisposable
                 Log.Warn($"open {path}: {ex.Message}");
             }
         }
-        Log.Warn("no battery device could be opened; falling back to GetSystemPowerStatus");
+        if (!_loggedNoBattery)
+        {
+            _loggedNoBattery = true;
+            Log.Warn("no battery device could be opened; falling back to GetSystemPowerStatus");
+        }
     }
+
+    private bool _loggedNoBattery;
 
     private static IEnumerable<string> EnumerateBatteryDevicePaths()
     {
@@ -274,18 +282,26 @@ public sealed class BatteryService : IDisposable
         }
         else
         {
-            // Fallback: no battery device, only the coarse system status.
+            // Fallback: no battery device, only the coarse system status. BatteryFlag 255
+            // means "unknown", which would otherwise read as charging *and* critical.
+            bool flagsKnown = sps.BatteryFlag != 255;
             sample = new BatterySample(
                 DateTime.Now,
                 sps.BatteryLifePercent <= 100 ? sps.BatteryLifePercent : 0,
                 0, 0, 0, acOnline,
-                (sps.BatteryFlag & 8) != 0,
+                flagsKnown && (sps.BatteryFlag & 8) != 0,
                 !acOnline,
-                (sps.BatteryFlag & 4) != 0,
+                flagsKnown && (sps.BatteryFlag & 4) != 0,
                 false);
 
-            // The device may have gone away (dock/undock). Retry occasionally.
-            if (_handle is null || _handle.IsInvalid) TryOpen();
+            // The device may have gone away (dock/undock), so retry - but not on every poll.
+            // On a machine with no battery at all each attempt is a SetupDi enumeration plus
+            // a log line, once a second, forever.
+            if ((_handle is null || _handle.IsInvalid) && DateTime.UtcNow >= _nextOpenAttempt)
+            {
+                _nextOpenAttempt = DateTime.UtcNow.AddSeconds(30);
+                TryOpen();
+            }
         }
 
         lock (_gate)
@@ -445,7 +461,10 @@ public sealed class BatteryService : IDisposable
             bool header = !File.Exists(path);
             using var w = new StreamWriter(path, append: true);
             if (header) w.WriteLine("timestamp,percent,capacity_mwh,voltage_mv,rate_mw,smoothed_rate_mw,ac,charging");
-            w.WriteLine($"{s.Time:yyyy-MM-dd HH:mm:ss},{s.Percent:F2},{s.CapacityMwh},{s.VoltageMv},{s.RateMw},{SmoothedRateMw():F0},{(s.AcOnline ? 1 : 0)},{(s.Charging ? 1 : 0)}");
+            // Invariant culture: with a comma decimal separator (de-DE, fr-FR, ...) "78,50"
+            // would split the percent across two columns and shift every field after it.
+            w.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"{s.Time:yyyy-MM-dd HH:mm:ss},{s.Percent:F2},{s.CapacityMwh},{s.VoltageMv},{s.RateMw},{SmoothedRateMw():F0},{(s.AcOnline ? 1 : 0)},{(s.Charging ? 1 : 0)}"));
         }
         catch (Exception ex) { Log.Warn($"csv: {ex.Message}"); }
     }

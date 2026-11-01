@@ -2,21 +2,23 @@
     BatteryHud build helper.
 
     Usage:
-        .\build.ps1                    # framework-dependent win-arm64 (small, needs .NET 8 Desktop Runtime)
-        .\build.ps1 -SelfContained     # standalone win-arm64 (~90 MB, no runtime install needed)
+        .\build.ps1                    # framework-dependent win-arm64 (small, needs .NET 10 Desktop Runtime)
+        .\build.ps1 -SelfContained     # standalone win-arm64 (no runtime install needed, much larger)
         .\build.ps1 -Rid win-x64       # only if you want to test on an x64 box
 
-    Requires the .NET 8 SDK for ARM64:
-        winget install Microsoft.DotNet.SDK.8
+    Requires the .NET 10 SDK for ARM64:
+        winget install Microsoft.DotNet.SDK.10
     Verify you got the native one (not the emulated x64 SDK):
         dotnet --info      ->  "Architecture: arm64"
 #>
 
 [CmdletBinding()]
 param(
+    [ValidateSet("win-arm64", "win-x64")]
     [string]$Rid = "win-arm64",
     [switch]$SelfContained,
     [switch]$SingleFile = $true,
+    [ValidateSet("Release", "Debug")]
     [string]$Configuration = "Release"
 )
 
@@ -25,15 +27,27 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $proj = Join-Path $root "src\BatteryHud.csproj"
 $out = Join-Path $root "publish\$Rid"
 
-Write-Host "SDK architecture check:" -ForegroundColor Cyan
+if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+    throw "dotnet not found. Install the .NET 10 SDK: winget install Microsoft.DotNet.SDK.10"
+}
+
+$sdk = (& dotnet --version).Trim()
+if ([int]($sdk.Split('.')[0]) -lt 10) {
+    throw "The .NET 10 SDK is required (found $sdk). Install it with: winget install Microsoft.DotNet.SDK.10"
+}
+
+Write-Host "SDK check:" -ForegroundColor Cyan
 $info = & dotnet --info
-$arch = ($info | Select-String -Pattern '^\s*Architecture:\s*(\S+)').Matches.Groups[1].Value
-Write-Host "  dotnet host architecture: $arch"
+$arch = ($info | Select-String -Pattern '^\s*Architecture:\s*(\S+)' | Select-Object -First 1).Matches.Groups[1].Value
+Write-Host "  dotnet SDK $sdk, host architecture: $arch"
 if ($Rid -eq "win-arm64" -and $arch -ne "arm64") {
     Write-Warning "Your dotnet host is '$arch'. The produced binary will still be ARM64, but you are building through emulation. Install the arm64 SDK for a fully native toolchain."
 }
 
-$args = @(
+# Not "$args": that is a PowerShell automatic variable and must not be reassigned.
+# DebugType is left to the csproj (portable): an embedded PDB would be carried inside the
+# single-file exe and inflate it for no runtime benefit.
+$publishArgs = @(
     "publish", $proj,
     "-c", $Configuration,
     "-r", $Rid,
@@ -41,12 +55,11 @@ $args = @(
     "--self-contained", $(if ($SelfContained) { "true" } else { "false" }),
     "-p:PublishSingleFile=$($SingleFile.ToString().ToLower())",
     "-p:PublishTrimmed=false",
-    "-p:IncludeNativeLibrariesForSelfExtract=true",
-    "-p:DebugType=embedded"
+    "-p:IncludeNativeLibrariesForSelfExtract=true"
 )
 
-Write-Host "`ndotnet $($args -join ' ')`n" -ForegroundColor DarkGray
-& dotnet @args
+Write-Host "`ndotnet $($publishArgs -join ' ')`n" -ForegroundColor DarkGray
+& dotnet @publishArgs
 if ($LASTEXITCODE -ne 0) { throw "publish failed" }
 
 Write-Host "`nOutput: $out" -ForegroundColor Green

@@ -98,8 +98,10 @@ public sealed class SettingsWindow : HudWindow
             "Shows config.json, samples.csv and the log"));
         AddFoot(new PillButton("Reset to defaults", Pal, _font, _fs - 1, () =>
         {
-            _resetDefaults();
+            // Close first: the reset opens a fresh window bound to the new config, and
+            // closing afterwards would shut that one instead.
             Close();
+            _resetDefaults();
         }, "Restores every setting and reopens this window"));
         footer.Child = footRow;
         DockPanel.SetDock(footer, Dock.Bottom);

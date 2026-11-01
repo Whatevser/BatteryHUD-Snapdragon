@@ -12,7 +12,7 @@ Built specifically because nothing existing does this on ARM64 without x64 emula
 
 | Layer | Choice | ARM64 story |
 |---|---|---|
-| Runtime | .NET 8 (`net8.0-windows`) | Publishes to `win-arm64`; code JITs straight to AArch64. No WOW64, no ARM64EC, no x64 shim. |
+| Runtime | .NET 10 LTS (`net10.0-windows`) | Publishes to `win-arm64`; code JITs straight to AArch64. No WOW64, no ARM64EC, no x64 shim. |
 | UI | WPF + WinForms `NotifyIcon` | Both ship as native ARM64 assemblies in the Windows Desktop runtime. |
 | Battery data | Battery class driver IOCTLs | Pure P/Invoke into `kernel32`/`setupapi`. Architecture-neutral. |
 | Power control | `powrprof.dll` | Same exports on ARM64 as x64. |
@@ -30,28 +30,64 @@ Manager → Details → add the *Architecture* column; it must read **ARM64**, n
 
 ## Build
 
-Install the **ARM64** .NET 8 SDK (not the x64 one — it works, but you'd be building through
+### Prerequisites
+
+Install the **ARM64** .NET 10 SDK (the x64 one works too, but then you are building through
 emulation):
 
 ```powershell
-winget install Microsoft.DotNet.SDK.8
-dotnet --info        # "Architecture: arm64"
+winget install Microsoft.DotNet.SDK.10
+dotnet --info        # should show "Architecture: arm64" and an SDK version 10.0.x
 ```
 
-Then:
+To *run* a framework-dependent build on another machine, that machine only needs the
+**.NET 10 Desktop Runtime (arm64)**:
 
 ```powershell
-# framework-dependent, ~2 MB, needs the .NET 8 Desktop Runtime (arm64)
-.\build.ps1
-
-# fully standalone, ~90 MB, nothing else to install
-.\build.ps1 -SelfContained
+winget install Microsoft.DotNet.DesktopRuntime.10
 ```
 
-Output lands in `publish\win-arm64\`. Run `BatteryHud.exe`.
+### With the build script
+
+```powershell
+# framework-dependent single-file exe, ~0.7 MB, needs the .NET 10 Desktop Runtime (arm64)
+.\build.ps1
+
+# fully standalone single-file exe, ~165 MB, nothing else to install
+.\build.ps1 -SelfContained
+
+# x64 build, only for testing on an x64 box
+.\build.ps1 -Rid win-x64
+```
+
+If script execution is blocked, run it as
+`powershell -ExecutionPolicy Bypass -File .\build.ps1`.
+
+### With plain `dotnet` (no script)
+
+```powershell
+dotnet publish src\BatteryHud.csproj -c Release -r win-arm64 --self-contained false `
+  -p:PublishSingleFile=true -o publish\win-arm64
+```
+
+For a quick debug build without publishing: `dotnet build src\BatteryHud.csproj`, then run
+`src\bin\Debug\net10.0-windows\BatteryHud.exe`.
+
+Output lands in `publish\win-arm64\`. Run `BatteryHud.exe`. The `.pdb` next to it only adds
+line numbers to the log and can be deleted.
 
 Drop an empty `portable.txt` next to the exe to keep `config.json`, `samples.csv` and the log
 beside the binary instead of in `%LOCALAPPDATA%\BatteryHud`.
+
+### Why the TFM has no Windows version suffix
+
+The project targets plain `net10.0-windows`, not `net10.0-windows10.0.19041.0`. A versioned
+TFM pulls in the C#/WinRT projections (`Microsoft.Windows.SDK.NET.dll`, ~25 MB) and the
+single-file publish bundles them. BatteryHud uses no WinRT at all — only Win32 P/Invoke, WMI
+and the registry — so on .NET 8 that made the "small" exe about 26 MB. It is ~0.7 MB now.
+
+The project also builds on Linux or macOS (`EnableWindowsTargeting` is set), which is handy
+for CI. It only *runs* on Windows.
 
 ---
 
@@ -63,8 +99,10 @@ beside the binary instead of in `%LOCALAPPDATA%\BatteryHud`.
   is set), *Windows Settings*, *Control Panel*, *System tray icons*, start with Windows, open
   the config folder, exit.
 - **Settings** is a real window with toggles and sliders. Every change applies instantly —
-  no OK button, no restart. Editing `config.json` by hand applies instantly too; the two
-  paths do not fight each other.
+  no OK button, no restart. Editing `config.json` by hand applies instantly too, and an open
+  Settings window is rebuilt to show the edited values. If the file is half-saved or has a
+  syntax error, the reload is skipped and the current settings stay in force. Your file is
+  never replaced with defaults.
 
 ### Power mode
 
@@ -300,6 +338,11 @@ Windows 10 four-position slider. Adding it as a fourth segment would be a small 
   so rather than showing a dead slider. External monitors over DDC/CI are stubbed in
   `BrightnessService.EnumerateExternal` and gated behind
   `Sections.ExternalMonitorBrightness` — wire-up in the flyout is left as an easy first PR.
+  Heads-up for whoever picks it up: the stub finds each monitor with `MonitorFromPoint` at
+  the display's width/2, height/2 *without its desktop position*, so every display resolves to
+  the primary. Carry `dmPosition` through `DisplayTarget` first.
+- **CSV logging** always writes `.` as the decimal separator, whatever the Windows locale,
+  so the file opens correctly in any spreadsheet.
 
 ---
 
@@ -343,6 +386,34 @@ driven from `config.json` without resource dictionaries to fight.
   logging the negotiated voltage alongside `rate_mw` would make charger comparison exact.
 - **A second flyout page** for history/graphs. `Sparkline` already takes arbitrary series.
 - **Hotkeys.** `RegisterHotKey` on the flyout's HWND; the message loop is already there.
+
+---
+
+## Changelog
+
+### 0.3.0 — .NET 10
+
+- Moved to **.NET 10 LTS** (`net10.0-windows`) and `System.Management` 10.0.14.
+- The framework-dependent exe went from **~26 MB to ~0.7 MB**: the WinRT projections the old
+  versioned TFM bundled are gone (see *Why the TFM has no Windows version suffix*).
+- Fixed: after a hand edit of `config.json`, an open Settings window kept editing the old
+  config, so its changes were silently dropped.
+- Fixed: *Reset to defaults* closed the Settings window instead of reopening it on the new
+  defaults.
+- Fixed: a half-saved or invalid `config.json` reset everything to defaults on hot-reload,
+  and the next change then wrote those defaults over your file. `null` sections in the JSON
+  no longer crash the app either.
+- Fixed: CSV decimals followed the Windows locale, which broke the columns on comma-decimal
+  locales.
+- Fixed: on a machine with no battery the device was re-enumerated and a warning logged
+  every poll. Now it retries every 30 s and logs once.
+- Fixed: a startup race could make the ASUS charge-limit check report "not available".
+- Fixed: clicking into a colour's hex box and away again counted as a colour change, which
+  for the accent colour turned *Follow Windows accent colour* off.
+- Fixed: a rejected refresh-rate change reverted to the rate active when the flyout opened,
+  not to the current one.
+- `build.ps1` checks for SDK 10+, no longer reassigns PowerShell's `$args`, and no longer
+  embeds the PDB in the exe.
 
 ---
 

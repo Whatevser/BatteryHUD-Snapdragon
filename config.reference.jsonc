@@ -76,27 +76,20 @@
     "BrightnessStep": 5
   },
 
-  // THE REAL CHARGE LIMIT. Tells the ASUS firmware to stop charging at LimitPercent.
-  // Needs an ASUS laptop with ASUS System Control Interface installed. Writing the ASUS
-  // service's stored value needs administrator; the ACPI path does not.
-  "AsusCharge": {
-    "Enabled": false,
-    "LimitPercent": 80,              // 40-100. ASUS's own UI only offers 60/80/100.
-    "ReapplyOnPowerChange": true,    // BIOS drops the limit on restart; leave this on
-    "MirrorToDisplayScaling": true   // also set ChargeLimit below to match
-  },
-
-  // DISPLAY ONLY, and nothing to do with AsusCharge above. Rescales what you SEE when
-  // charging stops below 100%, so the battery reads full instead of looking stuck.
+  // The charge limit. One switch, two effects: it asks the ASUS firmware to stop charging
+  // at Percent, and shows Percent as 100% so the battery does not look part-charged.
   //
-  // Percent, not watt-hours: OEM caps are configured in percent, and FullChargedCapacity
-  // falls as the pack wears, so a fixed Wh threshold slowly drifts away from whatever the
-  // OEM tool actually enforces. Voltage would be worse - the charge curve is nonlinear and
-  // moves with load and temperature.
+  // The display half works even if the firmware write fails - which matters when MyASUS
+  // already owns the cap. Needs ASUS System Control Interface for the hardware half;
+  // writing the ASUS service's stored value needs administrator.
+  //
+  // Percent, not watt-hours: full capacity falls as the pack wears, so a fixed Wh figure
+  // would drift away from the cap it is meant to match.
   "ChargeLimit": {
     "Enabled": false,
-    "Percent": 80,               // any whole percent, not just multiples of 5
-    "ShowActual": true              // adds "78% actual - 80% cap" to the detail line
+    "Percent": 80,                  // the UI only offers 80; 60 also works if you edit it
+    "ShowActual": true,             // adds "78% actual" to the detail line
+    "ReapplyOnPowerChange": true    // BIOS drops the limit on restart; leave this on
   },
 
   "Logging": {

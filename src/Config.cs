@@ -18,7 +18,6 @@ public sealed class AppConfig
     public TraySettings Tray { get; set; } = new();
     public SectionSettings Sections { get; set; } = new();
     public ChargeLimitSettings ChargeLimit { get; set; } = new();
-    public AsusChargeSettings AsusCharge { get; set; } = new();
     public LoggingSettings Logging { get; set; } = new();
 
     public AppConfig Clone()
@@ -136,49 +135,36 @@ public sealed class SectionSettings
 /// moves with load and temperature.
 /// </summary>
 /// <summary>
-/// DISPLAY ONLY. Rescales what the app shows so a capped battery reads as 100%. It does
-/// not touch the hardware and never has - see AsusChargeSettings for the setting that
-/// actually tells the battery to stop charging.
+/// The charge limit. One switch, two effects, because wanting one without the other has
+/// never come up:
+///
+///   - tells the ASUS firmware to stop charging at Percent;
+///   - shows that as 100%, so the battery does not look permanently part-charged.
+///
+/// The second half works even when the first fails, which matters: if MyASUS already owns
+/// the cap, or the firmware refuses our write, the display is still right.
 /// </summary>
 public sealed class ChargeLimitSettings
 {
-    /// <summary>Off by default - this is a display remap, not something to leave on blind.</summary>
+    /// <summary>Off by default.</summary>
     public bool Enabled { get; set; } = false;
 
-    /// <summary>The cap your OEM utility enforces. Shown as 100%.</summary>
+    /// <summary>
+    /// Where charging stops, and what reads as 100%. 80 is the only value the UI offers -
+    /// it is the one ASUS themselves recommend and the one their firmware is known to
+    /// honour. Editable here for anyone who wants 60, which ASUS also offers.
+    /// </summary>
     public int Percent { get; set; } = 80;
 
-    /// <summary>Also show the true percentage in the detail line, so nothing is hidden.</summary>
+    /// <summary>Adds "78% actual" to the detail line, so nothing is hidden.</summary>
     public bool ShowActual { get; set; } = true;
-}
-
-/// <summary>
-/// The real charge limit, pushed at the ASUS firmware. Unlike ChargeLimitSettings above
-/// this changes hardware behaviour: the battery stops charging at LimitPercent.
-///
-/// Requires an ASUS machine with ASUS System Control Interface installed. Writing the
-/// ASUS service's stored value needs administrator; the ACPI path does not.
-/// </summary>
-public sealed class AsusChargeSettings
-{
-    /// <summary>Off by default. Turning it on applies LimitPercent immediately.</summary>
-    public bool Enabled { get; set; } = false;
-
-    /// <summary>Where charging should stop. 40-100; ASUS's own UI only offers 60/80/100.</summary>
-    public int LimitPercent { get; set; } = 80;
 
     /// <summary>
-    /// Re-push the limit when the power source changes and at startup. The BIOS drops the
-    /// limit on every restart and the ASUS service can re-assert its own value, so leaving
-    /// this on is what makes the setting stick.
+    /// Re-push the limit on power-source changes and at startup. The BIOS drops it on
+    /// every restart and the ASUS service can re-assert its own value, so this is what
+    /// makes the setting stick.
     /// </summary>
     public bool ReapplyOnPowerChange { get; set; } = true;
-
-    /// <summary>
-    /// Mirror the limit into the display rescaling above, so the headline percentage and
-    /// the tray icon read full when the battery stops at the cap.
-    /// </summary>
-    public bool MirrorToDisplayScaling { get; set; } = true;
 }
 
 public sealed class LoggingSettings

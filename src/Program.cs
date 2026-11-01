@@ -111,7 +111,7 @@ public sealed class HudApp : Application
             {
                 // The BIOS clears the charge limit on every restart, so it has to be set
                 // again each run. Also logs which ACPI devices this firmware implements.
-                if (_cfg.AsusCharge.Enabled) AsusService.Reapply(_cfg);
+                if (_cfg.ChargeLimit.Enabled) AsusService.Reapply(_cfg);
                 else AsusService.ScanCapabilitiesOnce();
             }
             catch (Exception ex) { Log.Warn($"asus startup: {ex.Message}"); }
@@ -128,7 +128,7 @@ public sealed class HudApp : Application
 
         // The ASUS service re-asserts its own stored limit across power transitions, so
         // ours has to be pushed again or it quietly reverts.
-        if (_cfg.AsusCharge.ReapplyOnPowerChange)
+        if (_cfg.ChargeLimit.ReapplyOnPowerChange)
         {
             System.Threading.Tasks.Task.Run(() =>
             {
@@ -255,7 +255,7 @@ public sealed class HudApp : Application
         {
             OpenSettings = OpenSettings,
             ChargeToFullOnce = ToggleChargeToFull,
-            ChargeToFullAvailable = () => AsusService.Available && _cfg.AsusCharge.Enabled,
+            ChargeToFullAvailable = () => AsusService.Available && _cfg.ChargeLimit.Enabled,
             ChargeToFullActive = () => AsusService.BypassActive,
             OpenWindowsPowerSettings = ShellIntegration.OpenWindowsPowerSettings,
             OpenControlPanelPowerOptions = ShellIntegration.OpenControlPanelPowerOptions,
@@ -300,7 +300,7 @@ public sealed class HudApp : Application
         try
         {
             if (AsusService.BypassActive) AsusService.CancelChargeToFull();
-            else AsusService.BeginChargeToFull(_cfg.AsusCharge.LimitPercent);
+            else AsusService.BeginChargeToFull(_cfg.ChargeLimit.Percent);
         }
         catch (Exception ex) { Log.Warn($"charge to full: {ex.Message}"); }
     }

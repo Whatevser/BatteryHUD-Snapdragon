@@ -384,9 +384,9 @@ public static class AsusService
     /// </summary>
     public static void Reapply(AppConfig cfg)
     {
-        if (!cfg.AsusCharge.Enabled) return;
+        if (!cfg.ChargeLimit.Enabled) return;
         if (BypassActive) return;
         if (!Available) return;
-        SetLimit(cfg.AsusCharge.LimitPercent);
+        SetLimit(cfg.ChargeLimit.Percent);
     }
 }

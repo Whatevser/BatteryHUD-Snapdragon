@@ -140,59 +140,55 @@ shell folder is still registered. Turn Power off there and it stays off.
 
 ## Charge limit
 
-Two separate things with similar names, so the distinction matters:
+One switch. It asks the ASUS firmware to stop charging at 80%, and shows 80% as 100% so the
+battery does not look permanently part-charged.
 
-**Hardware (ASUS)** — actually tells the battery to stop charging. Settings → *Charge limit —
-hardware (ASUS)*. Needs an ASUS laptop with ASUS System Control Interface installed.
+Those are deliberately not two settings. The display half keeps working when the firmware
+write does not — which is the normal case if MyASUS already owns the cap, or if the firmware
+refuses (see below). Whatever happens, the number on screen is right.
 
-**Display only** — changes nothing on the hardware, just rescales what BatteryHud shows so a
-capped battery reads as 100% instead of looking permanently part-charged. Useful when some
-other tool owns the cap. Off by default.
-
-Turning the hardware limit on sets the display rescaling to match, unless you switch that off.
-
-### How the hardware limit works
+### How it works
 
 The limit is ASUS WMI device `0x00120057`, confirmed from two independent sources: g-helper's
 `AsusACPI.cs` and the Linux kernel's `asus-wmi` driver (`ASUS_WMI_CHARGE_THRESHOLD`). It is
-written through the `AsusAtkWmi_WMNB` WMI class in `root\wmi`.
+written through the `AsusAtkWmi_WMNB` class in `root\wmi`.
 
 BatteryHud writes it **two ways on purpose**:
 
-1. the ACPI call, which is immediate where the firmware implements the device;
+1. the ACPI call, immediate where the firmware implements the device;
 2. `ChargingRate` in the ASUS service's registry store.
 
 The second is not redundant. The ASUS service re-asserts its own stored limit on power
-transitions, so writing only the ACPI value gets silently reverted. Writing both makes the two
-agree. g-helper does the same thing for the same reason.
+transitions, so writing only the ACPI value gets silently reverted. Writing both makes them
+agree. g-helper does the same, for the same reason.
 
-The BIOS also drops the limit on every restart, so it is pushed again at startup and whenever
-the power source changes. *Re-apply after plug/unplug and restart* controls that; turning it
-off means the setting will not stick.
+The BIOS also clears the limit on every restart, so it is pushed again at startup and whenever
+the power source changes.
+
+80% is the only value the UI offers — it is what ASUS recommend and what their firmware is
+known to honour. `Percent` in `config.json` takes 60 as well, which ASUS also offer.
 
 ### Measured caveat
 
 On a Vivobook S 15 S5507QAD (ARM64, SCI v3.2.72.0) the ATK transport is fully present — the
-WMI class, the `DEVS`/`DSTS` methods and `\\.\ATKACPI` all work — but `DEVS 0x00120057`
-returns **0**, which in this interface means "device not supported" (1 = accepted). So on that
-firmware the ACPI path does nothing and only the registry path is left, which applies when the
-ASUS service next acts rather than immediately.
+WMI class, `DEVS`/`DSTS` and `\\.\ATKACPI` all work — but `DEVS 0x00120057` returns **0**,
+which in this interface means "device not supported" (1 = accepted). On that firmware the
+ACPI path does nothing and only the registry path remains, applying when the ASUS service next
+acts rather than immediately.
 
-The Settings panel reports which of the two actually took effect rather than claiming success.
-On startup the app also logs which device IDs in `0x00120050`–`0x00120070` the firmware does
-implement, read-only via `DSTS`, so the right ID can be identified if one exists. It never
-writes to an ID whose meaning has not been confirmed — `DEVS` is a generic setter keyed on a
-number, and a wrong ID would poke an unrelated subsystem.
+Settings reports which path actually took effect rather than claiming success. At startup the
+app logs a read-only `DSTS` sweep of `0x00120050`–`0x00120070` so the correct device ID can be
+identified if one exists. It never writes to an ID whose meaning is unconfirmed — `DEVS` is a
+generic setter keyed on a number, and a wrong ID would poke an unrelated subsystem.
 
 ### Charge to full once
 
-Lifts the limit until the battery is full, then restores it. In the tray menu and in Settings.
+Lifts the limit until the battery is full, then restores it. Tray menu and Settings.
 
-ASUS has its own version of this (`InstantFullChargeTime` / `InstantFullChargeTimeout`, on a
-24-hour timer) but BatteryHud does not use it: writing 100 and restoring the saved value when
-the pack tops out is the same behaviour, is ours end to end, and ends when the battery is
-actually full rather than when an invisible timer expires. It also ends if you unplug, since
-the point was to top up on mains.
+ASUS have their own version (`InstantFullChargeTime` / `InstantFullChargeTimeout`, on a 24-hour
+timer) which BatteryHud does not use: writing 100 and restoring the saved value when the pack
+tops out is the same behaviour, is ours end to end, and ends when the battery is actually full
+rather than when an invisible timer expires. It also ends if you unplug.
 
 ## Appearance
 

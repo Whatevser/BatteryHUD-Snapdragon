@@ -173,11 +173,6 @@ public sealed class SettingsWindow : HudWindow
             t.IconStyle.Equals("batteryvertical", StringComparison.OrdinalIgnoreCase) ? 1 : 0,
             i => { t.IconStyle = i == 1 ? "batteryvertical" : "battery"; Apply(); });
 
-        var sizes = new[] { 0, 16, 20, 24, 32 };
-        SegmentRow("Size", new[] { "Auto", "16", "20", "24", "32" },
-            Math.Max(0, Array.IndexOf(sizes, t.IconSize)),
-            i => { t.IconSize = sizes[i]; Apply(); });
-
         SegmentRow("Charging glyph", new[] { "Plug", "Bolt", "None" },
             !t.ShowChargingGlyph ? 2 : (t.ChargingGlyph.Equals("bolt", StringComparison.OrdinalIgnoreCase) ? 1 : 0),
             i =>
@@ -212,23 +207,34 @@ public sealed class SettingsWindow : HudWindow
             s.PowerMode, v => { s.PowerMode = v; Apply(); });
 
         // --------------------------------------------------------- charge limit
-        Header("Charge limit");
+        BuildAsusChargeSection();
+
+        // ------------------------------------------------- display rescaling
+        Header("Charge limit — display only");
+
+        var clNote = Ui.Text("This section changes NOTHING on the hardware. It only rescales what "
+                           + "BatteryHud shows, so a battery that stops at your cap reads as 100% "
+                           + "instead of looking permanently part-charged. To actually stop the "
+                           + "battery charging, use the section above.",
+            Pal.SubtleBrush, _fs - 1.5, _font);
+        clNote.TextWrapping = TextWrapping.Wrap;
+        clNote.Margin = new Thickness(0, 2, 0, 6);
+        _body.Children.Add(clNote);
 
         var cl = Cfg.ChargeLimit;
 
-        ToggleRow("Treat a charge cap as full",
-            "For when OEM software stops charging early. Off by default.",
+        ToggleRow("Show a capped battery as full",
+            "Purely cosmetic. Off by default.",
             cl.Enabled, v => { cl.Enabled = v; Apply(); });
 
-        SliderRow("Cap", 40, 100, 1, cl.Percent,
+        SliderRow("Treat this much as 100%", 40, 100, 1, cl.Percent,
             v => { cl.Percent = (int)v; Apply(); }, v => $"{v:0}%");
 
         ToggleRow("Also show the true percentage", "Adds \"78% actual\" to the detail line",
             cl.ShowActual, v => { cl.ShowActual = v; Apply(); });
 
-        var capNote = Ui.Text("Set this in percent to match your OEM utility. A threshold in watt-hours "
-                            + "would drift as the pack wears — full capacity falls over time, so a fixed "
-                            + "Wh figure creeps upward as a percentage.",
+        var capNote = Ui.Text("In percent, not watt-hours: full capacity falls as the pack wears, so a "
+                            + "fixed Wh figure would slowly drift away from the cap it is meant to match.",
             Pal.SubtleBrush, _fs - 2, _font);
         capNote.TextWrapping = TextWrapping.Wrap;
         capNote.Opacity = 0.75;
@@ -263,6 +269,153 @@ public sealed class SettingsWindow : HudWindow
         note.Opacity = 0.75;
         note.Margin = new Thickness(0, 14, 0, 4);
         _body.Children.Add(note);
+    }
+
+    /// <summary>
+    /// The real charge limit - the one that tells the battery to stop. Separate from the
+    /// display rescaling below it, which only changes what the numbers look like.
+    /// </summary>
+    private void BuildAsusChargeSection()
+    {
+        Header("Charge limit — hardware (ASUS)");
+
+        var ac = Cfg.AsusCharge;
+
+        if (!AsusService.Available)
+        {
+            var missing = Ui.Text("No ASUS charge-limit interface found on this machine. It needs an "
+                                + "ASUS laptop with ASUS System Control Interface installed.",
+                Pal.SubtleBrush, _fs - 1, _font);
+            missing.TextWrapping = TextWrapping.Wrap;
+            missing.Margin = new Thickness(0, 2, 0, 4);
+            _body.Children.Add(missing);
+            return;
+        }
+
+        var status = Ui.Text("", Pal.SubtleBrush, _fs - 1.5, _font);
+        status.TextWrapping = TextWrapping.Wrap;
+        status.Margin = new Thickness(0, 6, 0, 0);
+
+        int? stored = AsusService.ReadLimit();
+        if (stored.HasValue)
+        {
+            var found = Ui.Text($"ASUS currently has the limit at {stored.Value}%.",
+                Pal.SubtleBrush, _fs - 1.5, _font);
+            found.TextWrapping = TextWrapping.Wrap;
+            found.Margin = new Thickness(0, 2, 0, 4);
+            _body.Children.Add(found);
+        }
+
+        ToggleRow("Limit charging", "Stops the battery charging at the value below.",
+            ac.Enabled, v =>
+            {
+                ac.Enabled = v;
+                MirrorLimitToDisplay();
+                Apply();
+                if (v)
+                {
+                    var r = AsusService.SetLimit(ac.LimitPercent);
+                    status.Text = r.Detail;
+                }
+                else
+                {
+                    var r = AsusService.SetLimit(AsusService.MaxLimit);
+                    status.Text = "Limit removed. " + r.Detail;
+                }
+            });
+
+        // Committed, not Preview, so dragging does not fire a write per pixel.
+        // Committed only, so dragging the slider does not fire one write per pixel.
+        SliderRow("Stop charging at", AsusService.MinLimit, AsusService.MaxLimit, 1, ac.LimitPercent,
+            v =>
+            {
+                ac.LimitPercent = (int)v;
+                MirrorLimitToDisplay();
+                Apply();
+                if (ac.Enabled)
+                {
+                    var r = AsusService.SetLimit(ac.LimitPercent);
+                    status.Text = r.Detail;
+                }
+            },
+            v => $"{v:0}%");
+
+        var presets = new[] { 60, 80, 100 };
+        SegmentRow("Presets", new[] { "60%", "80%", "100%" },
+            Array.IndexOf(presets, ac.LimitPercent),
+            i =>
+            {
+                ac.LimitPercent = presets[i];
+                ac.Enabled = presets[i] < 100;
+                MirrorLimitToDisplay();
+                Apply();
+                var r = AsusService.SetLimit(ac.LimitPercent);
+                status.Text = r.Detail;
+            });
+
+        ToggleRow("Charge to full once",
+            "Lifts the limit until the battery is full, then puts it back.",
+            AsusService.BypassActive, v =>
+            {
+                if (v)
+                {
+                    var r = AsusService.BeginChargeToFull(ac.LimitPercent);
+                    status.Text = "Charging to full once. " + r.Detail;
+                }
+                else
+                {
+                    AsusService.CancelChargeToFull();
+                    status.Text = $"Cancelled; limit back to {ac.LimitPercent}%.";
+                }
+            });
+
+        ToggleRow("Re-apply after plug/unplug and restart",
+            "The BIOS drops the limit on restart and the ASUS service can overwrite it. "
+            + "Leave this on or the setting will not stick.",
+            ac.ReapplyOnPowerChange, v => { ac.ReapplyOnPowerChange = v; Apply(); });
+
+        ToggleRow("Also show the capped battery as full",
+            "Sets the display rescaling below to match this limit.",
+            ac.MirrorToDisplayScaling, v =>
+            {
+                ac.MirrorToDisplayScaling = v;
+                if (v)
+                {
+                    Cfg.ChargeLimit.Enabled = true;
+                    Cfg.ChargeLimit.Percent = ac.LimitPercent;
+                }
+                Apply();
+            });
+
+        _body.Children.Add(status);
+
+        var note = Ui.Text("ASUS's own 60/80/100 options are the safe choices; other values are "
+                         + "accepted by the interface but not all firmware honours them.",
+            Pal.SubtleBrush, _fs - 2, _font);
+        note.TextWrapping = TextWrapping.Wrap;
+        note.Opacity = 0.75;
+        note.Margin = new Thickness(0, 8, 0, 0);
+        _body.Children.Add(note);
+    }
+
+    /// <summary>
+    /// Keeps the display rescaling in step with the hardware limit, so a battery that
+    /// stops at 80% reads as full instead of looking stuck. Only when asked for, and
+    /// never for a 100% limit, where rescaling would be a no-op anyway.
+    /// </summary>
+    private void MirrorLimitToDisplay()
+    {
+        var ac = Cfg.AsusCharge;
+        if (!ac.MirrorToDisplayScaling) return;
+        if (ac.Enabled && ac.LimitPercent < 100)
+        {
+            Cfg.ChargeLimit.Enabled = true;
+            Cfg.ChargeLimit.Percent = ac.LimitPercent;
+        }
+        else
+        {
+            Cfg.ChargeLimit.Enabled = false;
+        }
     }
 
     private void Apply()

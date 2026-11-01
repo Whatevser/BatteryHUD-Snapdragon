@@ -19,6 +19,7 @@
     <RootNamespace>BatteryHud</RootNamespace>
     <StartupObject>BatteryHud.Program</StartupObject>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\assets\battery.ico</ApplicationIcon>
 
     <!-- ARM64 first. win-x64 kept only so the project can be built on an x64 dev box. -->
     <RuntimeIdentifiers>win-arm64;win-x64</RuntimeIdentifiers>
@@ -27,10 +28,23 @@
 
     <!-- Reflection-based JSON config + WPF: do not trim. -->
     <PublishTrimmed>false</PublishTrimmed>
+
+    <!--
+      Framework-dependent on purpose: the .NET 8 Desktop Runtime carries WPF and WinForms,
+      so the published exe only has to hold our own code plus System.Management. That is
+      what keeps it well under a megabyte; self-contained would be ~90 MB.
+    -->
     <SelfContained>false</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <DebugType>embedded</DebugType>
-    <Version>0.1.0</Version>
+
+    <!--
+      portable, not embedded: an embedded PDB is carried inside the single-file exe and
+      inflates it for no runtime benefit. portable writes BatteryHud.pdb alongside, which
+      keeps line numbers in the log if you want them and is deletable if you do not.
+    -->
+    <DebugType>portable</DebugType>
+    <Version>0.2.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

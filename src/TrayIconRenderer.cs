@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
 using System.Runtime.Versioning;
 using D = System.Drawing;
 
@@ -9,25 +11,20 @@ namespace BatteryHud;
 /// <summary>
 /// Draws the notification-area icon: a battery shell that fills and empties with the
 /// charge level, with a power-plug glyph knocked through it while charging. No digits.
+///
+/// The icon is built with every standard tray size in it rather than one size chosen from
+/// the DPI. The shell then picks the exact frame it needs, so the icon is sharp at any
+/// scaling and stays sharp if the window is dragged to a monitor with different DPI -
+/// neither of which a single-size icon manages, because the shell has to rescale it.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public static class TrayIconRenderer
 {
-    public static int ResolveSize(AppConfig cfg)
-    {
-        if (cfg.Tray.IconSize > 0) return Math.Clamp(cfg.Tray.IconSize, 16, 64);
-        uint dpi;
-        try { dpi = Native.GetDpiForSystem(); } catch { dpi = 96; }
-        double scale = dpi / 96.0;
-        return scale switch
-        {
-            >= 2.4 => 40,
-            >= 1.9 => 32,
-            >= 1.4 => 24,
-            >= 1.2 => 20,
-            _ => 16,
-        };
-    }
+    /// <summary>
+    /// Sizes the Windows notification area actually asks for across the DPI range, from
+    /// 100% up to 300%. 48 is included so a 300% display gets a native frame.
+    /// </summary>
+    private static readonly int[] Frames = { 16, 20, 24, 32, 40, 48 };
 
     private static D.Color Pick(AppConfig cfg, Palette pal, BatterySample s, double percent)
     {
@@ -55,10 +52,48 @@ public static class TrayIconRenderer
     /// </param>
     public static Icon Render(AppConfig cfg, Palette pal, BatterySample s, double percent)
     {
-        int size = ResolveSize(cfg);
+        var fg = Pick(cfg, pal, s, percent);
+        bool vertical = cfg.Tray.IconStyle.Equals("batteryvertical", StringComparison.OrdinalIgnoreCase);
+
+        var bitmaps = new List<Bitmap>();
+        try
+        {
+            foreach (int size in Frames)
+            {
+                var bmp = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    g.Clear(D.Color.Transparent);
+                    // Drawn fresh at each size rather than scaled, so stroke widths and the
+                    // plug glyph stay legible at 16 px instead of turning to mush.
+                    DrawBattery(g, size, fg, cfg, s, percent, vertical);
+                }
+                bitmaps.Add(bmp);
+            }
+
+            using var ms = new MemoryStream();
+            WriteIco(ms, bitmaps);
+            ms.Position = 0;
+            return new Icon(ms);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"icon render: {ex.Message}");
+            // Fall back to a single frame so the tray is never left without an icon.
+            return RenderSingle(cfg, pal, s, percent, 32);
+        }
+        finally
+        {
+            foreach (var b in bitmaps) b.Dispose();
+        }
+    }
+
+    private static Icon RenderSingle(AppConfig cfg, Palette pal, BatterySample s, double percent, int size)
+    {
         var fg = Pick(cfg, pal, s, percent);
         var bmp = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-
         using (var g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -79,6 +114,54 @@ public static class TrayIconRenderer
             Native.DestroyIcon(h);
             bmp.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Packs bitmaps into a multi-frame .ico in memory.
+    ///
+    /// Each frame is stored as PNG, which Windows has accepted inside icons since Vista
+    /// and which keeps the 32-bit alpha intact. The alternative, a BMP frame, needs a
+    /// hand-built DIB header with a doubled height for the AND mask - more code and more
+    /// ways to get the alpha wrong.
+    /// </summary>
+    private static void WriteIco(Stream target, List<Bitmap> bitmaps)
+    {
+        var encoded = new List<byte[]>();
+        foreach (var bmp in bitmaps)
+        {
+            using var png = new MemoryStream();
+            bmp.Save(png, System.Drawing.Imaging.ImageFormat.Png);
+            encoded.Add(png.ToArray());
+        }
+
+        using var w = new BinaryWriter(target, System.Text.Encoding.UTF8, leaveOpen: true);
+
+        // ICONDIR
+        w.Write((ushort)0);                  // reserved
+        w.Write((ushort)1);                  // type: 1 = icon
+        w.Write((ushort)encoded.Count);
+
+        // Image data starts after the directory and all of its entries.
+        int offset = 6 + (16 * encoded.Count);
+
+        for (int i = 0; i < encoded.Count; i++)
+        {
+            int size = bitmaps[i].Width;
+            // A dimension of 256 is stored as 0; nothing here is that large, but the
+            // encoding is cheap to honour.
+            w.Write((byte)(size >= 256 ? 0 : size));
+            w.Write((byte)(size >= 256 ? 0 : size));
+            w.Write((byte)0);                // palette entries, 0 for 32-bit
+            w.Write((byte)0);                // reserved
+            w.Write((ushort)1);              // colour planes
+            w.Write((ushort)32);             // bits per pixel
+            w.Write(encoded[i].Length);
+            w.Write(offset);
+            offset += encoded[i].Length;
+        }
+
+        foreach (var bytes in encoded) w.Write(bytes);
+        w.Flush();
     }
 
     // ------------------------------------------------------------------ battery

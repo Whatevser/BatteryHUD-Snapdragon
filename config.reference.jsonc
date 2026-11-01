@@ -53,7 +53,6 @@
 
   "Tray": {
     "IconStyle": "battery",           // battery | batteryvertical
-    "IconSize": 0,                    // 0 = derive from DPI
     "ColorByState": true,
     "ForegroundColor": "auto",        // used when ColorByState is false
     "LowThreshold": 25,
@@ -77,8 +76,18 @@
     "BrightnessStep": 5
   },
 
-  // Rescales what you SEE when an OEM utility caps charging below 100%. Purely a display
-  // remap - BatteryHud does not and cannot change the cap itself.
+  // THE REAL CHARGE LIMIT. Tells the ASUS firmware to stop charging at LimitPercent.
+  // Needs an ASUS laptop with ASUS System Control Interface installed. Writing the ASUS
+  // service's stored value needs administrator; the ACPI path does not.
+  "AsusCharge": {
+    "Enabled": false,
+    "LimitPercent": 80,              // 40-100. ASUS's own UI only offers 60/80/100.
+    "ReapplyOnPowerChange": true,    // BIOS drops the limit on restart; leave this on
+    "MirrorToDisplayScaling": true   // also set ChargeLimit below to match
+  },
+
+  // DISPLAY ONLY, and nothing to do with AsusCharge above. Rescales what you SEE when
+  // charging stops below 100%, so the battery reads full instead of looking stuck.
   //
   // Percent, not watt-hours: OEM caps are configured in percent, and FullChargedCapacity
   // falls as the pack wears, so a fixed Wh threshold slowly drifts away from whatever the

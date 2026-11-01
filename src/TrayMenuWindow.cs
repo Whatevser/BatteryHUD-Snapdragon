@@ -9,6 +9,9 @@ namespace BatteryHud;
 public sealed class TrayMenuActions
 {
     public required Action OpenSettings { get; init; }
+    public required Action ChargeToFullOnce { get; init; }
+    public required Func<bool> ChargeToFullAvailable { get; init; }
+    public required Func<bool> ChargeToFullActive { get; init; }
     public required Action OpenWindowsPowerSettings { get; init; }
     public required Action OpenControlPanelPowerOptions { get; init; }
     public required Action OpenConfigFolder { get; init; }
@@ -57,11 +60,22 @@ public sealed class TrayMenuWindow : HudWindow
 
         stack.Children.Add(new MenuRow("", "Settings", Pal, _font, fs, () => Run(_actions.OpenSettings)));
 
+        if (_actions.ChargeToFullAvailable())
+        {
+            stack.Children.Add(Ui.Separator(Pal.SeparatorBrush, 4));
+            bool active = _actions.ChargeToFullActive();
+            stack.Children.Add(new MenuRow(active ? "✓" : "",
+                active ? "Charging to full (click to stop)" : "Charge to full once",
+                Pal, _font, fs, () => Run(_actions.ChargeToFullOnce)));
+        }
+
         stack.Children.Add(Ui.Separator(Pal.SeparatorBrush, 4));
 
-        stack.Children.Add(new MenuRow("", "Power & battery", Pal, _font, fs,
+        // Named for where they land rather than for the page title, which is the thing
+        // you actually need to know when picking one.
+        stack.Children.Add(new MenuRow("", "Windows Settings", Pal, _font, fs,
             () => Run(_actions.OpenWindowsPowerSettings), "↗"));
-        stack.Children.Add(new MenuRow("", "Power Options", Pal, _font, fs,
+        stack.Children.Add(new MenuRow("", "Control Panel", Pal, _font, fs,
             () => Run(_actions.OpenControlPanelPowerOptions), "↗"));
 
         stack.Children.Add(Ui.Separator(Pal.SeparatorBrush, 4));

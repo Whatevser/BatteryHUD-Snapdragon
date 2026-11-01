@@ -107,6 +107,14 @@ public sealed class HudApp : Application
         {
             try { BrightnessService.GetInternal(); } catch { /* warm-up only */ }
             try { _ = PowerModeService.ApiAvailable; } catch { /* warm-up only */ }
+            try
+            {
+                // The BIOS clears the charge limit on every restart, so it has to be set
+                // again each run. Also logs which ACPI devices this firmware implements.
+                if (_cfg.AsusCharge.Enabled) AsusService.Reapply(_cfg);
+                else AsusService.ScanCapabilitiesOnce();
+            }
+            catch (Exception ex) { Log.Warn($"asus startup: {ex.Message}"); }
         });
 
         if (_args.Contains("--settings")) OpenSettings();
@@ -117,6 +125,18 @@ public sealed class HudApp : Application
     private void OnPowerSourceChanged(bool acOnline)
     {
         _lastAcOnline = acOnline;
+
+        // The ASUS service re-asserts its own stored limit across power transitions, so
+        // ours has to be pushed again or it quietly reverts.
+        if (_cfg.AsusCharge.ReapplyOnPowerChange)
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try { AsusService.Reapply(_cfg); }
+                catch (Exception ex) { Log.Warn($"asus reapply: {ex.Message}"); }
+            });
+        }
+
         Tick();
     }
 
@@ -130,6 +150,16 @@ public sealed class HudApp : Application
 
         _lastAcOnline = sample.AcOnline;
 
+        // Ends a one-time charge-to-full once the pack is actually full. Uses the true
+        // percentage, never the rescaled one, or a display cap would end it early.
+        if (AsusService.BypassActive)
+        {
+            // Cheap flag logic here; the restore write itself is handed to a background
+            // task inside the service, so the poll tick never blocks on WMI.
+            try { AsusService.OnBatterySample(sample.Percent, sample.AcOnline); }
+            catch (Exception ex) { Log.Warn($"asus bypass: {ex.Message}"); }
+        }
+
         UpdateTrayIcon(sample);
         _flyout?.Tick();
     }
@@ -138,7 +168,7 @@ public sealed class HudApp : Application
     {
         double shown = _battery.DisplayPercent(s);
         string sig = $"{(int)Math.Round(shown)}|{s.Charging}|{s.AcOnline}|{_pal.TaskbarDark}|" +
-                     $"{_cfg.Tray.IconStyle}|{_cfg.Tray.IconSize}|{_cfg.Tray.ChargingGlyph}|" +
+                     $"{_cfg.Tray.IconStyle}|{_cfg.Tray.ChargingGlyph}|" +
                      $"{_cfg.Tray.ShowChargingGlyph}|{_cfg.Tray.ColorByState}|{_cfg.Tray.OutlineScale}|" +
                      $"{_cfg.Tray.LowThreshold}|{_cfg.Tray.CriticalThreshold}";
         if (sig != _iconSignature)
@@ -224,6 +254,9 @@ public sealed class HudApp : Application
         _menu = new TrayMenuWindow(_cfg, _pal, new TrayMenuActions
         {
             OpenSettings = OpenSettings,
+            ChargeToFullOnce = ToggleChargeToFull,
+            ChargeToFullAvailable = () => AsusService.Available && _cfg.AsusCharge.Enabled,
+            ChargeToFullActive = () => AsusService.BypassActive,
             OpenWindowsPowerSettings = ShellIntegration.OpenWindowsPowerSettings,
             OpenControlPanelPowerOptions = ShellIntegration.OpenControlPanelPowerOptions,
             OpenConfigFolder = ShellIntegration.OpenConfigFolder,
@@ -260,6 +293,17 @@ public sealed class HudApp : Application
     }
 
     // ---------------------------------------------------------------- settings
+
+    /// <summary>Tray-menu entry: start a one-time charge to full, or stop one in progress.</summary>
+    private void ToggleChargeToFull()
+    {
+        try
+        {
+            if (AsusService.BypassActive) AsusService.CancelChargeToFull();
+            else AsusService.BeginChargeToFull(_cfg.AsusCharge.LimitPercent);
+        }
+        catch (Exception ex) { Log.Warn($"charge to full: {ex.Message}"); }
+    }
 
     private void OpenSettings()
     {

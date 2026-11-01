@@ -59,9 +59,9 @@ beside the binary instead of in `%LOCALAPPDATA%\BatteryHud`.
 
 - **Left-click** the tray icon → the flyout: charge, watts, graph, brightness, refresh rate,
   power mode. `Esc` or clicking away closes it.
-- **Right-click** the tray icon → menu: Settings, *Power & battery* (Windows Settings),
-  *Power Options* (Control Panel), *System tray icons*, start with Windows, open the config
-  folder, exit.
+- **Right-click** the tray icon → menu: Settings, charge to full once (when a hardware limit
+  is set), *Windows Settings*, *Control Panel*, *System tray icons*, start with Windows, open
+  the config folder, exit.
 - **Settings** is a real window with toggles and sliders. Every change applies instantly —
   no OK button, no restart. Editing `config.json` by hand applies instantly too; the two
   paths do not fight each other.
@@ -140,22 +140,59 @@ shell folder is still registered. Turn Power off there and it stays off.
 
 ## Charge limit
 
-If OEM software caps charging at, say, 80%, turn on *Charge limit* in Settings and 80% reads
-as 100% everywhere: tray icon fill, headline percentage, level bar, low/critical colouring,
-and the time-to-full countdown, which then ends where charging actually stops instead of
-counting toward a 100% the pack will never reach.
+Two separate things with similar names, so the distinction matters:
 
-It is a **display remap only** — BatteryHud does not set or change the cap, your OEM utility
-still does that. The toggle is off by default, and the detail line keeps showing the true
-figure (`78% actual · 80% cap`) so nothing is hidden. Watt-hour readings, health and cycle
-count are always the real values.
+**Hardware (ASUS)** — actually tells the battery to stop charging. Settings → *Charge limit —
+hardware (ASUS)*. Needs an ASUS laptop with ASUS System Control Interface installed.
 
-**Configured in percent, on purpose.** OEM caps are set in percent, and `FullChargedCapacity`
-falls as the pack wears — one machine here reports 60250 mWh against a 70010 mWh design, about
-14% down — so a threshold stored in watt-hours would slowly drift away from what the OEM tool
-enforces, while a percentage tracks it. Voltage would be worse again: the charge curve is
-nonlinear and shifts with load and temperature, so the same voltage means different states of
-charge from minute to minute.
+**Display only** — changes nothing on the hardware, just rescales what BatteryHud shows so a
+capped battery reads as 100% instead of looking permanently part-charged. Useful when some
+other tool owns the cap. Off by default.
+
+Turning the hardware limit on sets the display rescaling to match, unless you switch that off.
+
+### How the hardware limit works
+
+The limit is ASUS WMI device `0x00120057`, confirmed from two independent sources: g-helper's
+`AsusACPI.cs` and the Linux kernel's `asus-wmi` driver (`ASUS_WMI_CHARGE_THRESHOLD`). It is
+written through the `AsusAtkWmi_WMNB` WMI class in `root\wmi`.
+
+BatteryHud writes it **two ways on purpose**:
+
+1. the ACPI call, which is immediate where the firmware implements the device;
+2. `ChargingRate` in the ASUS service's registry store.
+
+The second is not redundant. The ASUS service re-asserts its own stored limit on power
+transitions, so writing only the ACPI value gets silently reverted. Writing both makes the two
+agree. g-helper does the same thing for the same reason.
+
+The BIOS also drops the limit on every restart, so it is pushed again at startup and whenever
+the power source changes. *Re-apply after plug/unplug and restart* controls that; turning it
+off means the setting will not stick.
+
+### Measured caveat
+
+On a Vivobook S 15 S5507QAD (ARM64, SCI v3.2.72.0) the ATK transport is fully present — the
+WMI class, the `DEVS`/`DSTS` methods and `\\.\ATKACPI` all work — but `DEVS 0x00120057`
+returns **0**, which in this interface means "device not supported" (1 = accepted). So on that
+firmware the ACPI path does nothing and only the registry path is left, which applies when the
+ASUS service next acts rather than immediately.
+
+The Settings panel reports which of the two actually took effect rather than claiming success.
+On startup the app also logs which device IDs in `0x00120050`–`0x00120070` the firmware does
+implement, read-only via `DSTS`, so the right ID can be identified if one exists. It never
+writes to an ID whose meaning has not been confirmed — `DEVS` is a generic setter keyed on a
+number, and a wrong ID would poke an unrelated subsystem.
+
+### Charge to full once
+
+Lifts the limit until the battery is full, then restores it. In the tray menu and in Settings.
+
+ASUS has its own version of this (`InstantFullChargeTime` / `InstantFullChargeTimeout`, on a
+24-hour timer) but BatteryHud does not use it: writing 100 and restoring the saved value when
+the pack tops out is the same behaviour, is ours end to end, and ends when the battery is
+actually full rather than when an invisible timer expires. It also ends if you unplug, since
+the point was to top up on mains.
 
 ## Appearance
 
@@ -282,6 +319,7 @@ src/
   TrayMenuWindow.cs    the right-click menu
   SettingsWindow.cs    the settings GUI
   ShellIntegration.cs  autostart and links to the Windows pages
+  AsusService.cs       ASUS charge limit over ATK WMI, plus charge-to-full-once
 ```
 
 Nothing is templated in XAML: every control draws itself in `OnRender`, so the whole look is

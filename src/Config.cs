@@ -49,6 +49,14 @@ public sealed class AppearanceSettings
     /// <summary>0 = solid tint, 100 = tint invisible (pure blur).</summary>
     public double Transparency { get; set; } = 45;
 
+    /// <summary>
+    /// Blur what is behind the window (acrylic). Off makes the window genuinely see-through,
+    /// and Transparency then controls exactly how much: Windows' acrylic has no blur-strength
+    /// knob, so with blur on, Transparency can only trade tint for blur - which looks like a
+    /// slight colour change rather than "more transparent".
+    /// </summary>
+    public bool Blur { get; set; } = true;
+
     /// <summary>Extra frost drawn over the blur. 0 = none, 100 = milky.</summary>
     public double GlassEffect { get; set; } = 25;
 
@@ -217,6 +225,20 @@ public static class ConfigStore
     /// defaults, because the next Settings change would then write those defaults over the
     /// user's file.
     /// </summary>
+    /// <summary>
+    /// ASUS offers 60, 80 and 100. Anything else is snapped to the nearest of those. This
+    /// mostly repairs the 79 that an old build saved: its slider showed a rounded "80%" but
+    /// stored the truncated value, and the label has read "79%" ever since.
+    /// </summary>
+    public static int SnapChargePercent(int percent)
+    {
+        int[] allowed = { 60, 80, 100 };
+        int best = 80;
+        foreach (int a in allowed)
+            if (Math.Abs(a - percent) < Math.Abs(best - percent)) best = a;
+        return best;
+    }
+
     public static AppConfig? TryLoad()
     {
         try
@@ -228,8 +250,20 @@ public static class ConfigStore
                 Save(fresh);
                 return fresh;
             }
-            var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(FilePath), Options);
-            return cfg is null ? null : Normalize(cfg);
+            var parsed = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(FilePath), Options);
+            if (parsed is null) return null;
+            // JSON can null the section even though the property is non-nullable.
+            ChargeLimitSettings? onDisk = parsed.ChargeLimit;
+            int percentOnDisk = onDisk?.Percent ?? 80;
+            var cfg = Normalize(parsed);
+            if (cfg.ChargeLimit.Percent != percentOnDisk)
+            {
+                // Persist the repair so config.json stops saying 79. The reload this write
+                // triggers finds nothing left to fix, so it does not loop.
+                Log.Info($"config: charge limit {percentOnDisk}% is not an ASUS value; using {cfg.ChargeLimit.Percent}%");
+                Save(cfg);
+            }
+            return cfg;
         }
         catch (Exception ex)
         {
@@ -251,6 +285,7 @@ public static class ConfigStore
         c.ChargeLimit ??= new();
         c.Logging ??= new();
         c.Sections.PreferredRefreshRates ??= Array.Empty<int>();
+        c.ChargeLimit.Percent = SnapChargePercent(c.ChargeLimit.Percent);
         return c;
     }
 

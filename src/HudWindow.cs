@@ -86,7 +86,7 @@ public abstract class HudWindow : Window
         // WPF must not paint an opaque surface or the blur never shows through.
         if (src is not null) src.CompositionTarget.BackgroundColor = Colors.Transparent;
 
-        if (!ApplyAcrylic(hwnd, Pal.GlassTint))
+        if (!ApplyAcrylic(hwnd, Pal.GlassTint, Pal.Blur))
         {
             Log.Warn("acrylic unavailable; falling back to an opaque window");
             if (RootBorder is not null) RootBorder.Background = Pal.OpaqueBrush;
@@ -116,7 +116,7 @@ public abstract class HudWindow : Window
                    : Native.DWMWCP_ROUND;
         Native.DwmSetWindowAttribute(hwnd, Native.DWMWA_WINDOW_CORNER_PREFERENCE, ref corner, sizeof(int));
 
-        if (ApplyAcrylic(hwnd, pal.GlassTint))
+        if (ApplyAcrylic(hwnd, pal.GlassTint, pal.Blur))
         {
             if (src is not null) src.CompositionTarget.BackgroundColor = Colors.Transparent;
         }
@@ -127,14 +127,20 @@ public abstract class HudWindow : Window
         }
     }
 
-    private static bool ApplyAcrylic(IntPtr hwnd, Color tint)
+    /// <param name="blur">
+    /// True: acrylic, i.e. the backdrop blurred with the tint over it. The blur strength is
+    /// fixed by Windows, so the tint alpha only trades tint for blur. False: a transparent
+    /// gradient - no blur, so the tint alpha really is how see-through the window is.
+    /// </param>
+    private static bool ApplyAcrylic(IntPtr hwnd, Color tint, bool blur)
     {
         // ACCENT_POLICY.GradientColor is 0xAABBGGRR.
         uint abgr = (uint)((tint.A << 24) | (tint.B << 16) | (tint.G << 8) | tint.R);
 
         var policy = new Native.ACCENT_POLICY
         {
-            AccentState = Native.ACCENT_ENABLE_ACRYLICBLURBEHIND,
+            AccentState = blur ? Native.ACCENT_ENABLE_ACRYLICBLURBEHIND
+                               : Native.ACCENT_ENABLE_TRANSPARENTGRADIENT,
             AccentFlags = 2,
             GradientColor = abgr,
         };

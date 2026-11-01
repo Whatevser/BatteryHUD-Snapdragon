@@ -70,6 +70,9 @@ public sealed class Palette
 
     public required Color Accent { get; init; }
 
+    /// <summary>Acrylic blur behind the window, or plain see-through glass when false.</summary>
+    public required bool Blur { get; init; }
+
     /// <summary>Glass tint including the alpha derived from Transparency.</summary>
     public required Color GlassTint { get; init; }
 
@@ -132,6 +135,7 @@ public sealed class Palette
         return new Palette
         {
             TaskbarDark = theme.SystemDark,
+            Blur = a.Blur,
             Accent = accent,
             GlassTint = Color.FromArgb(tintAlpha, glass.R, glass.G, glass.B),
             Veil = Color.FromArgb(veilAlpha, 0xFF, 0xFF, 0xFF),

@@ -148,6 +148,11 @@ public sealed class SettingsWindow : HudWindow
             ConfigStore.ParseColor(a.GlassColor, Colors.Black),
             c => { a.GlassColor = ConfigStore.ToHex(c); Apply(); });
 
+        ToggleRow("Blur behind the glass",
+            "Off makes the window really see-through. With blur on, Windows fixes the blur "
+            + "strength, so Transparency only swaps tint for blur.",
+            a.Blur, v => { a.Blur = v; Apply(); });
+
         SliderRow("Transparency", 0, 100, 1, a.Transparency,
             v => { a.Transparency = v; Apply(); }, v => $"{v:0}%");
 

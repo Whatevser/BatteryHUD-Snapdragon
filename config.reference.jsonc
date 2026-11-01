@@ -22,7 +22,8 @@
 
     // Backdrop is always Win10-style acrylic (SetWindowCompositionAttribute).
     "GlassColor": "#FF1B1B1B",        // tint blended over the blurred wallpaper
-    "Transparency": 45,               // 0 = solid tint, 100 = pure blur, no tint
+    "Blur": true,                     // false = no blur, genuinely see-through glass
+    "Transparency": 45,               // 0 = solid tint, 100 = no tint (pure blur, or fully clear with Blur off)
     "GlassEffect": 25,                // extra white frost painted over the blur
 
     "Foreground": "#FFFFFFFF",
@@ -89,7 +90,7 @@
   "ChargeLimit": {
     "Enabled": false,               // ask the ASUS firmware to stop charging at Percent
     "ShowAsFull": false,            // show Percent as 100% - display only, independent
-    "Percent": 80,                  // the UI only offers 80; 60 also works if you edit it
+    "Percent": 80,                  // 60, 80 or 100; anything else is snapped to the nearest on load
     "ShowActual": true,             // adds "78% actual" to the detail line
     "ReapplyOnPowerChange": true    // BIOS drops the limit on restart; leave this on
   },

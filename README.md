@@ -222,7 +222,9 @@ The BIOS also clears the limit on every restart, so it is pushed again at startu
 the power source changes.
 
 80% is the only value the UI offers — it is what ASUS recommend and what their firmware is
-known to honour. `Percent` in `config.json` takes 60 as well, which ASUS also offer.
+known to honour. `Percent` in `config.json` also takes 60 or 100, which ASUS also offer. Any
+other value is snapped to the nearest of the three when the file loads, and the corrected
+value is written back. This repairs the `79` an old build saved through a slider rounding bug.
 
 ### Measured caveat
 
@@ -260,6 +262,10 @@ single ARGB tint. Three controls drive it:
 
 - **Glass colour** — the tint blended over the blurred wallpaper. Full HSV picker.
 - **Transparency** — the alpha of that tint. 0 is a solid colour, 100 is pure blur with no tint.
+- **Blur behind the glass** — on by default. Windows fixes the acrylic blur strength, so with
+  blur on, *Transparency* only trades tint for blur, and that looks like a small colour
+  change rather than "more transparent". Turn blur off for genuinely see-through glass;
+  *Transparency* then controls exactly how see-through it is.
 - **Glass effect** — a separate white wash WPF paints *on top of* the blur. This is the only
   one of the three that is not the compositor: there is no blur-radius knob in the accent API,
   so "frostier" is achieved by adding a veil.
@@ -405,6 +411,13 @@ driven from `config.json` without resource dictionaries to fight.
 ---
 
 ## Changelog
+
+### 0.3.2
+
+- Added *Blur behind the glass*. With blur off, *Transparency* really makes the window
+  see-through; with blur on it can only trade tint for Windows' fixed-strength blur.
+- The charge limit read "79%" because an old build saved 79 through a slider bug. Values
+  other than 60/80/100 are now snapped to the nearest one and saved back.
 
 ### 0.3.1
 

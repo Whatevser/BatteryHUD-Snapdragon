@@ -106,20 +106,37 @@ public static class AsusService
 
     // ------------------------------------------------------------- availability
 
+    /// <summary>
+    /// Raised (on a background thread, possibly) whenever something the UI shows about the
+    /// charge limit may have changed: the interface probe finished, the DSTS scan reached a
+    /// verdict, a limit was written, or charge-to-full started or ended. The Settings window
+    /// listens so it never needs reopening to show the current state.
+    /// </summary>
+    public static event Action? StateChanged;
+
+    private static void RaiseStateChanged()
+    {
+        try { StateChanged?.Invoke(); }
+        catch (Exception ex) { Log.Warn($"asus state changed handler: {ex.Message}"); }
+    }
+
+    private static DateTime _retryProbeAt = DateTime.MaxValue;
+
     /// <summary>True when the ATK WMI class with a DEVS method is present.</summary>
     public static bool Available
     {
         get
         {
-            if (_available.HasValue) return _available.Value;
+            if (_available.HasValue && DateTime.UtcNow < _retryProbeAt) return _available.Value;
 
             // The startup task and the UI thread both ask this. Without the lock the second
             // caller can get in while the first is still probing and read a premature
             // "false", which the Settings window then reports as "no ASUS interface".
             lock (ProbeGate)
             {
-                if (_available.HasValue) return _available.Value;
+                if (_available.HasValue && DateTime.UtcNow < _retryProbeAt) return _available.Value;
                 bool found = false;
+                bool transient = false;
                 try
                 {
                     using var searcher = new ManagementObjectSearcher(WmiScope, $"SELECT * FROM {WmiClass}");
@@ -138,12 +155,20 @@ public static class AsusService
                 }
                 catch (Exception ex)
                 {
-                    Log.Warn($"asus: {WmiClass}/DEVS not available: {ex.Message}"
-                             + (IsElevated ? "" : " (not running as administrator)"));
+                    // Elevated and still refused is usually the ASUS WMI provider not being up
+                    // yet - seen right after logon. Caching that for the whole session would
+                    // report "no ASUS interface" until the next restart, so try again shortly.
+                    // Non-elevated refusals are permanent for this process; no point retrying.
+                    transient = IsElevated;
+                    Log.Warn($"asus: {WmiClass}/DEVS not available: {ex.Message.Trim()}"
+                             + (IsElevated ? " (elevated; will retry)" : " (not running as administrator)"));
                 }
 
+                bool changed = _available != found;
                 _available = found;
-                Log.Info($"asus interface available: {found}");
+                _retryProbeAt = transient ? DateTime.UtcNow.AddSeconds(20) : DateTime.MaxValue;
+                if (changed || !transient) Log.Info($"asus interface available: {found}");
+                if (changed) RaiseStateChanged();
                 return found;
             }
         }
@@ -152,7 +177,7 @@ public static class AsusService
     private static readonly object ProbeGate = new();
     private static readonly object ScanGate = new();
 
-    /// <summary>True when the ASUS service's own limit store exists.</summary>
+    /// <summary>True when the ASUS service's own limit store exists. Readable without admin.</summary>
     public static bool ServiceStorePresent
     {
         get
@@ -166,12 +191,42 @@ public static class AsusService
         }
     }
 
+    /// <summary>The ACPI route: the ATK class answers and the firmware has not refused the device.</summary>
+    public static bool FirmwareRouteUsable => Available && _firmwareImplementsLimit != false;
+
+    /// <summary>
+    /// The ASUS service route: ChargingRate in its registry store, which the service applies
+    /// on the next power event. Needs administrator to write, but not the ATK WMI class.
+    ///
+    /// This is the route that actually works on firmware that implements none of the
+    /// battery devices (measured: S5507QAD), so it must count as "can set the limit" on its
+    /// own. Treating firmware refusal as "cannot set a limit" was a regression.
+    /// </summary>
+    public static bool ServiceRouteUsable => IsElevated && ServiceStorePresent;
+
+    /// <summary>True when at least one route to the charge limit can be used.</summary>
+    public static bool CanSetLimit => FirmwareRouteUsable || ServiceRouteUsable;
+
+    /// <summary>One plain sentence on why CanSetLimit is false, or null when it is true.</summary>
+    public static string? WhyCannotSetLimit()
+    {
+        if (CanSetLimit) return null;
+        if (!IsElevated)
+            return "BatteryHud is not running as administrator. Both the ASUS interface and the "
+                 + "ASUS service store refuse a normal process, so the limit cannot be changed.";
+        if (!ServiceStorePresent && !Available)
+            return "No ASUS charge-limit interface on this machine (no ATK WMI class, no ASUS "
+                 + "service store). Whatever already caps the battery keeps doing it.";
+        return "The firmware does not implement the ASUS charge-limit device and the ASUS "
+             + "service store is missing, so there is nowhere to write the limit. Set it in MyASUS.";
+    }
+
     // ------------------------------------------------------------------ reading
 
     /// <summary>
     /// The limit the ASUS service currently believes in, or null. The ACPI side cannot be
     /// read back - the Linux driver notes the same and caches instead - so the registry is
-    /// the only source of truth available.
+    /// the only source of truth available. Readable without administrator.
     /// </summary>
     public static int? ReadLimit()
     {
@@ -189,22 +244,23 @@ public static class AsusService
 
     public static ChargeLimitResult SetLimit(int percent)
     {
-        percent = Math.Clamp(percent, MinLimit, MaxLimit);
+        try { return SetLimitCore(Math.Clamp(percent, MinLimit, MaxLimit)); }
+        finally { RaiseStateChanged(); }
+    }
 
-        if (!Available)
+    private static ChargeLimitResult SetLimitCore(int percent)
+    {
+        if (Available) ScanCapabilitiesOnce();
+
+        if (!CanSetLimit)
             return new ChargeLimitResult(ChargeLimitOutcome.Unavailable, percent,
-                IsElevated
-                    ? "No ASUS ATK interface. Needs ASUS System Control Interface installed."
-                    : "The ASUS interface refused a non-elevated caller. Run BatteryHud as "
-                      + "administrator to change the charge limit.");
-
-        ScanCapabilitiesOnce();
+                WhyCannotSetLimit() ?? "No route to the charge limit.");
 
         // 1. ACPI, unless the firmware has already said it does not implement the device.
         //    Re-asking on every change just fills the log with identical refusals.
         bool firmwareTook = false;
         int rc = 0;
-        if (_firmwareImplementsLimit != false)
+        if (FirmwareRouteUsable)
         {
             rc = InvokeDevs(DevIdChargeLimit, (uint)percent);
             firmwareTook = rc == 1;
@@ -220,51 +276,62 @@ public static class AsusService
             }
         }
 
-        // 2. The service's store, so it does not re-assert an older value over the top.
-        bool stored = WriteServiceLimit(percent);
+        // 2. The service's store, so it does not re-assert an older value over the top -
+        //    and, on firmware without the ACPI device, the only route that works at all.
+        string? storeError = WriteServiceLimit(percent);
+        bool stored = storeError is null;
+        if (stored) Log.Info($"asus: {ChargingRateValue} = {percent} written to the ASUS service store");
 
         if (firmwareTook)
         {
             return new ChargeLimitResult(ChargeLimitOutcome.AppliedByFirmware, percent,
                 stored ? "Applied by firmware; ASUS service updated to match."
-                       : "Applied by firmware. Could not update the ASUS service store " +
-                         "(needs administrator), so it may revert on the next power event.");
+                       : $"Applied by firmware, but the ASUS service store was not updated ({storeError}), "
+                         + "so it may revert on the next power event.");
         }
 
         if (stored)
         {
             return new ChargeLimitResult(ChargeLimitOutcome.StoredForService, percent,
-                $"Firmware refused device 0x{DevIdChargeLimit:X8} (returned {rc}). " +
-                "Saved where the ASUS service reads it; it should apply on the next " +
-                "plug/unplug or resume.");
+                $"Saved to the ASUS service ({percent}%). It takes effect on the next "
+                + "plug/unplug or resume.");
         }
 
         return new ChargeLimitResult(ChargeLimitOutcome.Failed, percent,
-            $"Firmware refused device 0x{DevIdChargeLimit:X8} (returned {rc}) and the " +
-            "registry write failed. Run BatteryHud as administrator and try again.");
+            $"Could not write the limit: {storeError}.");
     }
 
-    private static bool WriteServiceLimit(int percent)
+    /// <summary>Null on success, otherwise a short reason fit for the UI.</summary>
+    private static string? WriteServiceLimit(int percent)
     {
         try
         {
             using var k = Registry.LocalMachine.OpenSubKey(OptimizationKey, writable: true);
-            if (k is null) return false;
+            if (k is null)
+            {
+                Log.Warn($"asus: service store key missing: HKLM\\{OptimizationKey}");
+                return "the ASUS service store key does not exist (is ASUS System Control Interface installed?)";
+            }
             k.SetValue(ChargingRateValue, percent, RegistryValueKind.DWord);
 
             // Read back - a protected or policy-managed key can swallow the write.
             using var verify = Registry.LocalMachine.OpenSubKey(OptimizationKey);
-            return verify?.GetValue(ChargingRateValue) is int v && v == percent;
+            var back = verify?.GetValue(ChargingRateValue);
+            if (back is int v && v == percent) return null;
+            Log.Warn($"asus: wrote {ChargingRateValue}={percent} but it reads back as {back ?? "nothing"}");
+            return $"the value did not stick (reads back as {back ?? "nothing"})";
         }
-        catch (UnauthorizedAccessException)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)
         {
-            Log.Warn($"asus: {ChargingRateValue} needs administrator");
-            return false;
+            Log.Warn($"asus: {ChargingRateValue}: access denied (elevated: {IsElevated})");
+            return IsElevated
+                ? "access to the ASUS service store was denied even with administrator rights"
+                : "administrator rights are needed";
         }
         catch (Exception ex)
         {
             Log.Warn($"asus: write {ChargingRateValue}: {ex.Message}");
-            return false;
+            return ex.Message;
         }
     }
 
@@ -337,6 +404,7 @@ public static class AsusService
             if (!Available) return;
             ScanCore();
         }
+        RaiseStateChanged();
     }
 
     private static void ScanCore()
@@ -398,14 +466,25 @@ public static class AsusService
     /// <summary>The limit to restore once the battery is full.</summary>
     private static int _limitBeforeBypass = 80;
 
-    public static ChargeLimitResult BeginChargeToFull(int limitToRestore)
+    /// <summary>
+    /// Whether mains has been seen since the bypass started. Starting charge-to-full on
+    /// battery is normal ("top up next time I plug in"); only an unplug *after* charging on
+    /// mains should end it. Previously the very next sample saw "on battery" and cancelled
+    /// it within a second.
+    /// </summary>
+    private static bool _bypassSawAc;
+
+    public static ChargeLimitResult BeginChargeToFull(int limitToRestore, bool acOnlineNow = false)
     {
         _limitBeforeBypass = Math.Clamp(limitToRestore, MinLimit, MaxLimit);
         var result = SetLimit(MaxLimit);
+        _bypassSawAc = acOnlineNow;
         BypassActive = result.Outcome is ChargeLimitOutcome.AppliedByFirmware
                                       or ChargeLimitOutcome.StoredForService;
         if (BypassActive)
-            Log.Info($"asus: charge-to-full started, will restore {_limitBeforeBypass}%");
+            Log.Info($"asus: charge-to-full started, will restore {_limitBeforeBypass}%"
+                     + (acOnlineNow ? "" : " (waiting for the charger)"));
+        RaiseStateChanged();
         return result;
     }
 
@@ -431,15 +510,19 @@ public static class AsusService
             BypassActive = false;
             Log.Info($"asus: battery full, restoring {_limitBeforeBypass}%");
             RestoreAsync(_limitBeforeBypass);
+            RaiseStateChanged();
             return;
         }
 
-        // Unplugged mid-bypass: the point was to top up on mains, so stop waiting.
-        if (!acOnline)
+        if (acOnline) { _bypassSawAc = true; return; }
+
+        // Unplugged after charging on mains: the top-up is over, put the limit back.
+        if (_bypassSawAc)
         {
             BypassActive = false;
             Log.Info($"asus: unplugged during charge-to-full, restoring {_limitBeforeBypass}%");
             RestoreAsync(_limitBeforeBypass);
+            RaiseStateChanged();
         }
     }
 
@@ -466,7 +549,7 @@ public static class AsusService
     {
         if (!cfg.ChargeLimit.Enabled) return;
         if (BypassActive) return;
-        if (!Available) return;
+        if (!CanSetLimit) return;
         SetLimit(cfg.ChargeLimit.Percent);
     }
 }

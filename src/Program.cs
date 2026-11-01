@@ -12,15 +12,33 @@ namespace BatteryHud;
 [SupportedOSPlatform("windows")]
 public static class Program
 {
+    public const string MutexName = @"Local\BatteryHud.SingleInstance";
+
+    /// <summary>Signalled by a new instance that is taking over from this one.</summary>
+    public const string ExitEventName = @"Local\BatteryHud.Exit";
+
     [STAThread]
     public static int Main(string[] args)
     {
-        using var mutex = new Mutex(initiallyOwned: true, @"Local\BatteryHud.SingleInstance", out bool created);
+        using var mutex = new Mutex(initiallyOwned: true, MutexName, out bool created);
         if (!created)
         {
-            WinForms.MessageBox.Show("BatteryHud is already running (look in the notification area).",
-                "BatteryHud", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Information);
-            return 1;
+            // Started as administrator while a normal instance is already in the tray - the
+            // usual case, because "Start with Windows" launched that one unelevated. Simply
+            // refusing here left the user on the non-admin instance, which then said "not
+            // running as administrator" although they had just run it as administrator.
+            // So an elevated launch (or --replace) asks the running one to exit and takes over.
+            bool takeOver = AsusService.IsElevated || args.Contains("--replace");
+            if (!(takeOver && TakeOver(mutex)))
+            {
+                WinForms.MessageBox.Show(
+                    takeOver
+                        ? "BatteryHud is already running and did not hand over.\n\n"
+                          + "Exit it from its tray menu, then start BatteryHud as administrator again."
+                        : "BatteryHud is already running (look in the notification area).",
+                    "BatteryHud", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Information);
+                return 1;
+            }
         }
 
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
@@ -29,6 +47,29 @@ public static class Program
         var app = new HudApp(args);
         try { return app.Run(); }
         catch (Exception ex) { Log.Warn($"fatal: {ex}"); throw; }
+    }
+
+    /// <summary>Asks the running instance to exit, then waits to own the mutex.</summary>
+    private static bool TakeOver(Mutex mutex)
+    {
+        try
+        {
+            if (!EventWaitHandle.TryOpenExisting(ExitEventName, out var exitEvent))
+            {
+                // An older build without the exit signal, or one we may not signal.
+                Log.Warn("takeover: the running instance does not accept an exit request");
+                return false;
+            }
+            using (exitEvent) exitEvent.Set();
+
+            try { return mutex.WaitOne(TimeSpan.FromSeconds(10)); }
+            catch (AbandonedMutexException) { return true; } // it exited without releasing: ours now
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"takeover: {ex.Message}");
+            return false;
+        }
     }
 }
 
@@ -53,6 +94,8 @@ public sealed class HudApp : Application
     private string _appearanceSignature = "";
     private bool? _lastAcOnline;
     private readonly string[] _args;
+    private EventWaitHandle? _exitEvent;
+    private RegisteredWaitHandle? _exitWait;
 
     public HudApp(string[] args)
     {
@@ -117,8 +160,23 @@ public sealed class HudApp : Application
             catch (Exception ex) { Log.Warn($"asus startup: {ex.Message}"); }
         });
 
+        // Lets a newer elevated launch ask this instance to step aside (see Program.TakeOver).
+        try
+        {
+            _exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ExitEventName);
+            _exitWait = ThreadPool.RegisterWaitForSingleObject(_exitEvent,
+                (_, _) => Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    Log.Info("exit requested by a new instance");
+                    ExitApp();
+                })), null, Timeout.Infinite, executeOnlyOnce: true);
+        }
+        catch (Exception ex) { Log.Warn($"exit event: {ex.Message}"); }
+
         if (_args.Contains("--settings")) OpenSettings();
-        Log.Info("started");
+        Log.Info($"started (administrator: {(AsusService.IsElevated ? "yes" : "no")}, "
+                 + $"{System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}, "
+                 + $".NET {Environment.Version})");
     }
 
     /// <summary>Driven by WM_POWERBROADCAST, so this runs the instant the plug moves.</summary>
@@ -255,9 +313,7 @@ public sealed class HudApp : Application
         {
             OpenSettings = OpenSettings,
             ChargeToFullOnce = ToggleChargeToFull,
-            ChargeToFullAvailable = () => AsusService.Available
-                                          && AsusService.FirmwareImplementsLimit != false
-                                          && _cfg.ChargeLimit.Enabled,
+            ChargeToFullAvailable = () => AsusService.CanSetLimit && _cfg.ChargeLimit.Enabled,
             ChargeToFullActive = () => AsusService.BypassActive,
             OpenWindowsPowerSettings = ShellIntegration.OpenWindowsPowerSettings,
             OpenControlPanelPowerOptions = ShellIntegration.OpenControlPanelPowerOptions,
@@ -302,7 +358,7 @@ public sealed class HudApp : Application
         try
         {
             if (AsusService.BypassActive) AsusService.CancelChargeToFull();
-            else AsusService.BeginChargeToFull(_cfg.ChargeLimit.Percent);
+            else AsusService.BeginChargeToFull(_cfg.ChargeLimit.Percent, _lastAcOnline ?? false);
         }
         catch (Exception ex) { Log.Warn($"charge to full: {ex.Message}"); }
     }
@@ -318,7 +374,8 @@ public sealed class HudApp : Application
         var window = new SettingsWindow(_cfg, _pal, SaveAndApply, ResetToDefaults,
             ShellIntegration.OpenConfigFolder,
             ShellIntegration.RunAtLoginEnabled,
-            () => ShellIntegration.SetRunAtLogin(!ShellIntegration.RunAtLoginEnabled()));
+            () => ShellIntegration.SetRunAtLogin(!ShellIntegration.RunAtLoginEnabled()),
+            () => _lastAcOnline ?? false);
         // Only forget the window if it is still the current one; an older instance closing
         // late must not orphan its replacement.
         window.Closed += (_, _) => { if (ReferenceEquals(_settings, window)) _settings = null; };
@@ -432,6 +489,14 @@ public sealed class HudApp : Application
                 OpenSettings();
             }
         }
+        else
+        {
+            // Not rebuilt (that would tear down a colour picker mid-drag), but the glass
+            // tint, frost and corner radius can be pushed into the open window in place, so
+            // the Settings window shows its own changes without being reopened.
+            try { _settings?.RefreshBackdrop(_pal); }
+            catch (Exception ex) { Log.Warn($"settings backdrop: {ex.Message}"); }
+        }
     }
 
 
@@ -440,6 +505,8 @@ public sealed class HudApp : Application
         try
         {
             _timer.Stop();
+            _exitWait?.Unregister(null);
+            _exitEvent?.Dispose();
             _tray.Visible = false;
             _tray.Dispose();
             _currentIcon?.Dispose();

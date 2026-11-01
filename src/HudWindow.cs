@@ -86,7 +86,7 @@ public abstract class HudWindow : Window
         // WPF must not paint an opaque surface or the blur never shows through.
         if (src is not null) src.CompositionTarget.BackgroundColor = Colors.Transparent;
 
-        if (!ApplyAcrylic(hwnd))
+        if (!ApplyAcrylic(hwnd, Pal.GlassTint))
         {
             Log.Warn("acrylic unavailable; falling back to an opaque window");
             if (RootBorder is not null) RootBorder.Background = Pal.OpaqueBrush;
@@ -94,9 +94,41 @@ public abstract class HudWindow : Window
         }
     }
 
-    private bool ApplyAcrylic(IntPtr hwnd)
+    /// <summary>
+    /// Pushes a new glass tint, frost and corner radius into a window that is already open,
+    /// without rebuilding its content. Used for the Settings window, whose own backdrop
+    /// otherwise only changed after it was closed and reopened.
+    /// </summary>
+    public void RefreshBackdrop(Palette pal)
     {
-        var tint = Pal.GlassTint;
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || !IsVisible) return;
+        var src = (HwndSource?)PresentationSource.FromVisual(this);
+
+        if (RootBorder is not null)
+        {
+            RootBorder.CornerRadius = new CornerRadius(Cfg.Appearance.CornerRadius);
+            RootBorder.Background = pal.VeilBrush;
+        }
+
+        int corner = Cfg.Appearance.CornerRadius <= 0 ? Native.DWMWCP_DONOTROUND
+                   : Cfg.Appearance.CornerRadius <= 6 ? Native.DWMWCP_ROUNDSMALL
+                   : Native.DWMWCP_ROUND;
+        Native.DwmSetWindowAttribute(hwnd, Native.DWMWA_WINDOW_CORNER_PREFERENCE, ref corner, sizeof(int));
+
+        if (ApplyAcrylic(hwnd, pal.GlassTint))
+        {
+            if (src is not null) src.CompositionTarget.BackgroundColor = Colors.Transparent;
+        }
+        else
+        {
+            if (RootBorder is not null) RootBorder.Background = pal.OpaqueBrush;
+            if (src is not null) src.CompositionTarget.BackgroundColor = pal.Opaque;
+        }
+    }
+
+    private static bool ApplyAcrylic(IntPtr hwnd, Color tint)
+    {
         // ACCENT_POLICY.GradientColor is 0xAABBGGRR.
         uint abgr = (uint)((tint.A << 24) | (tint.B << 16) | (tint.G << 8) | tint.R);
 

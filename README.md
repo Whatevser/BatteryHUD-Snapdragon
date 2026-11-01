@@ -190,6 +190,19 @@ is actually yours to control.
 Both the ATK WMI class and the registry store need **administrator**; a non-elevated run gets
 "access denied" and the hardware half is unavailable.
 
+### Running as administrator
+
+- **Once:** right-click `BatteryHud.exe` → *Run as administrator*, or use **Restart as
+  administrator** in Settings → Charge limit. If a normal instance is already in the tray,
+  the elevated one now takes over from it. Before, it showed "already running" and quit,
+  leaving you on the non-admin instance.
+- **At every logon:** while running as administrator, turn *Start with Windows* off and on
+  again. From an elevated instance this creates a scheduled task, "BatteryHud", set to *run
+  with highest privileges* at logon: no UAC prompt, and it is allowed to start on battery.
+  The old `HKCU\...\Run` entry is removed so the app does not start twice. A Run entry can
+  never start anything elevated, which is why the limit used to stop working after a reboot.
+- The log's `started` line says `administrator: yes/no`, so you can check which you got.
+
 ### How it works
 
 The limit is ASUS WMI device `0x00120057`, confirmed from two independent sources: g-helper's
@@ -219,12 +232,14 @@ implements **none** of the battery devices. A read-only `DSTS` sweep of
 `0x00120050`–`0x00120070` reports nothing implemented, and `DEVS 0x00120057` returns **0**,
 which in this interface means "device not supported" (1 = accepted).
 
-So on that machine BatteryHud cannot set the cap, and says so rather than offering a switch
-that silently does nothing. The hardware toggle is dimmed, the reason is spelled out, and the
-display switch stays available. Set the cap in MyASUS.
+The cap still works on that machine, through route 2: BatteryHud writes `ChargingRate` to
+the ASUS service's store, and the service applies it on the next plug/unplug or resume.
+Settings says which route is in use. The switch is only dimmed when *neither* route can be
+used: not elevated, or no ASUS service store at all. (One earlier build dimmed it whenever
+the firmware refused the ACPI device, which hid the route that actually works.)
 
-The first refusal is remembered, so the ACPI call is not repeated on every change — otherwise
-the log fills with identical failures.
+The first ACPI refusal is remembered, so the ACPI call is not repeated on every change —
+otherwise the log fills with identical failures.
 
 BatteryHud never writes to a device ID whose meaning is unconfirmed: `DEVS` is a generic
 setter keyed on a number, and a wrong ID would poke an unrelated subsystem.
@@ -390,6 +405,26 @@ driven from `config.json` without resource dictionaries to fight.
 ---
 
 ## Changelog
+
+### 0.3.1
+
+- Fixed: the charge limit was disabled on firmware without the ACPI charge-limit device
+  (e.g. Vivobook S 15 S5507QAD), although writing the ASUS service store works there. Both
+  routes count again; charge-to-full and re-apply are back too.
+- Fixed: starting as administrator while a normal instance was running left you on the
+  normal one. The elevated launch now takes over. Added *Restart as administrator*.
+- Fixed: *Start with Windows* always started without admin rights. From an elevated
+  instance it now uses a "run with highest privileges" logon task.
+- Fixed: an elevated start right after logon could cache "ASUS interface unavailable" for
+  the whole session. It retries now.
+- Fixed: failures said "run as administrator" even when elevated. They now give the real
+  reason (key missing, value did not stick, access denied).
+- Fixed: *Charge to full once* started on battery was cancelled a second later. It now waits
+  for the charger.
+- Settings no longer needs reopening: the charge-limit section updates itself when the probe
+  finishes, a limit is written or charge-to-full ends, and glass colour, transparency, frost
+  and corner radius apply to the open Settings window live. Limit writes run off the UI
+  thread.
 
 ### 0.3.0 — .NET 10
 

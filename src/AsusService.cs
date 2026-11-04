@@ -450,94 +450,141 @@ public static class AsusService
         catch (Exception ex) { Log.Warn($"asus DSTS scan: {ex.Message}"); }
     }
 
-    // ------------------------------------------------- one-time charge to full
+    // ------------------------------------------------- timed Charging Cap Bypass
 
-    /// <summary>
-    /// Lifts the cap until the battery reaches full, then puts it back.
-    ///
-    /// ASUS has its own version of this (InstantFullChargeTime / InstantFullChargeTimeout
-    /// in the service's registry store, on a 24-hour timeout), but this does not use it:
-    /// writing 100 and restoring the saved value when the battery tops out is the same
-    /// behaviour, is ours end to end, and is predictable - it ends when the battery is
-    /// actually full rather than when an invisible timer expires. g-helper does the same.
-    /// </summary>
-    public static bool BypassActive { get; private set; }
+    private static readonly object BypassGate = new();
+    private static readonly System.Threading.SemaphoreSlim WriteGate = new(1, 1);
+    private static DateTimeOffset? _bypassUntil;
+    private static bool _restorePending;
+    private static int _restoreLimit = 80;
+    private static DateTimeOffset _nextRestoreAttempt = DateTimeOffset.MinValue;
+    private static string BypassFile => System.IO.Path.Combine(ConfigStore.Directory, "charging-bypass.txt");
 
-    /// <summary>The limit to restore once the battery is full.</summary>
-    private static int _limitBeforeBypass = 80;
-
-    /// <summary>
-    /// Whether mains has been seen since the bypass started. Starting charge-to-full on
-    /// battery is normal ("top up next time I plug in"); only an unplug *after* charging on
-    /// mains should end it. Previously the very next sample saw "on battery" and cancelled
-    /// it within a second.
-    /// </summary>
-    private static bool _bypassSawAc;
-
-    public static ChargeLimitResult BeginChargeToFull(int limitToRestore, bool acOnlineNow = false)
+    public static bool BypassActive
     {
-        _limitBeforeBypass = Math.Clamp(limitToRestore, MinLimit, MaxLimit);
-        var result = SetLimit(MaxLimit);
-        _bypassSawAc = acOnlineNow;
-        BypassActive = result.Outcome is ChargeLimitOutcome.AppliedByFirmware
-                                      or ChargeLimitOutcome.StoredForService;
-        if (BypassActive)
-            Log.Info($"asus: charge-to-full started, will restore {_limitBeforeBypass}%"
-                     + (acOnlineNow ? "" : " (waiting for the charger)"));
+        get { lock (BypassGate) return _bypassUntil.HasValue && !_restorePending; }
+    }
+    public static DateTimeOffset? BypassUntil
+    {
+        get { lock (BypassGate) return _bypassUntil; }
+    }
+
+    private static void SaveBypassState()
+    {
+        System.IO.Directory.CreateDirectory(ConfigStore.Directory);
+        if (_bypassUntil.HasValue)
+            System.IO.File.WriteAllText(BypassFile,
+                $"{_bypassUntil.Value.ToUnixTimeSeconds()}|{_restoreLimit}");
+        else if (System.IO.File.Exists(BypassFile)) System.IO.File.Delete(BypassFile);
+    }
+
+    /// <summary>Called before startup reapplication; expired overrides restore the cap.</summary>
+    public static void LoadBypassState()
+    {
+        lock (BypassGate)
+        {
+            if (!System.IO.File.Exists(BypassFile)) return;
+            try
+            {
+                var parts = System.IO.File.ReadAllText(BypassFile).Trim().Split('|');
+                _bypassUntil = DateTimeOffset.FromUnixTimeSeconds(long.Parse(parts[0],
+                    System.Globalization.CultureInfo.InvariantCulture));
+                _restoreLimit = Math.Clamp(int.Parse(parts[1],
+                    System.Globalization.CultureInfo.InvariantCulture), MinLimit, MaxLimit);
+                _restorePending = DateTimeOffset.UtcNow >= _bypassUntil.Value;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"asus bypass state invalid: {ex.Message}");
+                _bypassUntil = null;
+                _restorePending = false;
+                // Do not delete a malformed state file: startup's normal cap reapply
+                // still protects the battery, and the file remains for diagnostics.
+            }
+        }
         RaiseStateChanged();
-        return result;
     }
 
-    public static void CancelChargeToFull()
+    /// <summary>Serialized charge-limit writes prevent an old power event from winning.</summary>
+    public static ChargeLimitResult SetLimitSerialized(int percent)
     {
-        if (!BypassActive) return;
-        BypassActive = false;
-        Log.Info($"asus: charge-to-full cancelled, restoring {_limitBeforeBypass}%");
-        SetLimit(_limitBeforeBypass);
+        WriteGate.Wait();
+        try { return SetLimit(percent); }
+        finally { WriteGate.Release(); }
     }
 
-    /// <summary>
-    /// Call on every battery sample. Ends the bypass once the battery is effectively full.
-    /// </summary>
-    public static void OnBatterySample(double truePercent, bool acOnline)
+    public static ChargeLimitResult BeginChargingCapBypass(int limitToRestore, double hours)
     {
-        if (!BypassActive) return;
-
-        // >= 99 rather than 100: a pack that has lost capacity may never report a round
-        // 100, which would leave the bypass stuck on forever.
-        if (truePercent >= 99)
+        lock (BypassGate)
         {
-            BypassActive = false;
-            Log.Info($"asus: battery full, restoring {_limitBeforeBypass}%");
-            RestoreAsync(_limitBeforeBypass);
+            if (_bypassUntil.HasValue)
+                return new ChargeLimitResult(ChargeLimitOutcome.Failed, 100, "Bypass already active or restoring.");
+            _restoreLimit = Math.Clamp(limitToRestore, MinLimit, MaxLimit);
+            _bypassUntil = DateTimeOffset.UtcNow.AddHours(Math.Clamp(hours, 0.5, 24));
+            _restorePending = false;
+            // Persist the restoration intent BEFORE lifting the hardware cap.
+            try { SaveBypassState(); }
+            catch (Exception ex)
+            {
+                Log.Warn($"asus bypass persistence failed: {ex.Message}");
+                _restorePending = true;
+                // Fail closed: do not leave an untracked 100% bypass running.
+                TryRestoreLocked();
+                return new ChargeLimitResult(ChargeLimitOutcome.Failed, 100,
+                    "Could not save the bypass deadline; restoring the normal cap.");
+            }
+            var result = SetLimitSerialized(MaxLimit);
+            if (result.Outcome is not (ChargeLimitOutcome.AppliedByFirmware or ChargeLimitOutcome.StoredForService))
+            {
+                _bypassUntil = null;
+                try { SaveBypassState(); }
+                catch (Exception ex) { Log.Warn($"asus bypass cleanup: {ex.Message}"); }
+                return result;
+            }
+            Log.Info($"asus: Charging Cap Bypass until {_bypassUntil:O}; restore {_restoreLimit}%");
             RaiseStateChanged();
-            return;
-        }
-
-        if (acOnline) { _bypassSawAc = true; return; }
-
-        // Unplugged after charging on mains: the top-up is over, put the limit back.
-        if (_bypassSawAc)
-        {
-            BypassActive = false;
-            Log.Info($"asus: unplugged during charge-to-full, restoring {_limitBeforeBypass}%");
-            RestoreAsync(_limitBeforeBypass);
-            RaiseStateChanged();
+            return result;
         }
     }
 
-    /// <summary>
-    /// OnBatterySample runs on the poll tick, i.e. the UI thread. A WMI call plus a
-    /// registry write-and-verify there would stall the interface, so the flag is cleared
-    /// synchronously and only the write is handed off.
-    /// </summary>
-    private static void RestoreAsync(int percent)
+    public static void CancelChargingCapBypass()
     {
-        System.Threading.Tasks.Task.Run(() =>
+        lock (BypassGate)
         {
-            try { SetLimit(percent); }
-            catch (Exception ex) { Log.Warn($"asus restore: {ex.Message}"); }
-        });
+            if (!_bypassUntil.HasValue) return;
+            _restorePending = true;
+            _nextRestoreAttempt = DateTimeOffset.MinValue;
+        }
+        TickChargingCapBypass();
+    }
+
+    /// <summary>Run periodically and on startup; restoration retries after failures.</summary>
+    public static void TickChargingCapBypass()
+    {
+        lock (BypassGate)
+        {
+            if (!_bypassUntil.HasValue) return;
+            if (!_restorePending && DateTimeOffset.UtcNow < _bypassUntil.Value) return;
+            _restorePending = true;
+            if (DateTimeOffset.UtcNow < _nextRestoreAttempt) return;
+            _nextRestoreAttempt = DateTimeOffset.UtcNow.AddSeconds(30);
+            TryRestoreLocked();
+        }
+    }
+
+    private static void TryRestoreLocked()
+    {
+        var result = SetLimitSerialized(_restoreLimit);
+        if (result.Outcome is ChargeLimitOutcome.AppliedByFirmware or ChargeLimitOutcome.StoredForService)
+        {
+            _bypassUntil = null;
+            _restorePending = false;
+            try { SaveBypassState(); }
+            catch (Exception ex) { Log.Warn($"asus bypass state cleanup: {ex.Message}"); }
+            Log.Info($"asus: Charging Cap Bypass ended; restored {_restoreLimit}%");
+        }
+        else Log.Warn($"asus bypass restore failed; will retry: {result.Detail}");
+        RaiseStateChanged();
     }
 
     /// <summary>
@@ -548,8 +595,14 @@ public static class AsusService
     public static void Reapply(AppConfig cfg)
     {
         if (!cfg.ChargeLimit.Enabled) return;
-        if (BypassActive) return;
+        // An active timed override must not be overwritten by power-event reapplication.
+        // An expired override must be restored before any ordinary reapply.
+        TickChargingCapBypass();
+        lock (BypassGate)
+        {
+            if (_bypassUntil.HasValue) return;
+        }
         if (!CanSetLimit) return;
-        SetLimit(cfg.ChargeLimit.Percent);
+        SetLimitSerialized(cfg.ChargeLimit.Percent);
     }
 }

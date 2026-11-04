@@ -116,6 +116,7 @@ public sealed class HudApp : Application
         };
 
         _cfg = ConfigStore.Load();
+        AsusService.LoadBypassState();
         _themeWatcher = new ThemeWatcher();
         _pal = Palette.Build(_cfg, _themeWatcher.Current);
         _appearanceSignature = AppearanceSignature();
@@ -208,15 +209,9 @@ public sealed class HudApp : Application
 
         _lastAcOnline = sample.AcOnline;
 
-        // Ends a one-time charge-to-full once the pack is actually full. Uses the true
-        // percentage, never the rescaled one, or a display cap would end it early.
-        if (AsusService.BypassActive)
-        {
-            // Cheap flag logic here; the restore write itself is handed to a background
-            // task inside the service, so the poll tick never blocks on WMI.
-            try { AsusService.OnBatterySample(sample.Percent, sample.AcOnline); }
-            catch (Exception ex) { Log.Warn($"asus bypass: {ex.Message}"); }
-        }
+        // The bypass is deadline-based, not battery-percentage-based.
+        // Never block the UI polling thread with WMI or registry operations.
+        System.Threading.Tasks.Task.Run(AsusService.TickChargingCapBypass);
 
         UpdateTrayIcon(sample);
         _flyout?.Tick();
@@ -312,9 +307,10 @@ public sealed class HudApp : Application
         _menu = new TrayMenuWindow(_cfg, _pal, new TrayMenuActions
         {
             OpenSettings = OpenSettings,
-            ChargeToFullOnce = ToggleChargeToFull,
+            ChargeToFullOnce = ToggleChargingCapBypass,
             ChargeToFullAvailable = () => AsusService.CanSetLimit && _cfg.ChargeLimit.Enabled,
             ChargeToFullActive = () => AsusService.BypassActive,
+            ChargeToFullUntil = () => AsusService.BypassUntil,
             OpenWindowsPowerSettings = ShellIntegration.OpenWindowsPowerSettings,
             OpenControlPanelPowerOptions = ShellIntegration.OpenControlPanelPowerOptions,
             OpenConfigFolder = ShellIntegration.OpenConfigFolder,
@@ -352,15 +348,20 @@ public sealed class HudApp : Application
 
     // ---------------------------------------------------------------- settings
 
-    /// <summary>Tray-menu entry: start a one-time charge to full, or stop one in progress.</summary>
-    private void ToggleChargeToFull()
+    /// <summary>Start or cancel the timed Charging Cap Bypass.</summary>
+    private void ToggleChargingCapBypass()
     {
-        try
+        if (!_cfg.ChargeLimit.Enabled) return;
+        System.Threading.Tasks.Task.Run(() =>
         {
-            if (AsusService.BypassActive) AsusService.CancelChargeToFull();
-            else AsusService.BeginChargeToFull(_cfg.ChargeLimit.Percent, _lastAcOnline ?? false);
-        }
-        catch (Exception ex) { Log.Warn($"charge to full: {ex.Message}"); }
+            try
+            {
+                if (AsusService.BypassUntil.HasValue) AsusService.CancelChargingCapBypass();
+                else AsusService.BeginChargingCapBypass(_cfg.ChargeLimit.Percent,
+                    _cfg.ChargeLimit.BypassHours);
+            }
+            catch (Exception ex) { Log.Warn($"Charging Cap Bypass: {ex.Message}"); }
+        });
     }
 
     private void OpenSettings()

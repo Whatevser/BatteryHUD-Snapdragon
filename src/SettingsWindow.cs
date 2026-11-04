@@ -314,6 +314,8 @@ public sealed class SettingsWindow : HudWindow
                       + "Takes effect on the next plug/unplug or resume.";
         var hw = ToggleRowReturning($"Limit charging to {cl.Percent}%", hint, cl.Enabled, v =>
         {
+            if (!v && AsusService.BypassUntil.HasValue)
+                AsusService.CancelChargingCapBypass();
             cl.Enabled = v;
             Apply();
             if (!canSet)
@@ -324,7 +326,7 @@ public sealed class SettingsWindow : HudWindow
             }
             RunChargeAction(() =>
             {
-                var r = AsusService.SetLimit(v ? cl.Percent : AsusService.MaxLimit);
+                var r = AsusService.SetLimitSerialized(v ? cl.Percent : AsusService.MaxLimit);
                 return (v ? "" : "Limit removed. ") + r.Detail;
             });
         });
@@ -339,28 +341,28 @@ public sealed class SettingsWindow : HudWindow
         ToggleRow("Show the true percentage too", "Adds \"78% actual\" to the detail line",
             cl.ShowActual, v => { cl.ShowActual = v; Apply(); });
 
-        // ---- one-time bypass, only meaningful if we can move the limit at all
-        if (canSet)
+        // ---- timed bypass (no battery percentage or charger checks)
+        SegmentRow("Charging Cap Bypass duration",
+            new[] { "1 h", "2 h", "4 h", "6 h", "8 h", "12 h", "24 h" },
+            Math.Max(0, Array.IndexOf(new double[] { 1, 2, 4, 6, 8, 12, 24 }, cl.BypassHours)),
+            i => { cl.BypassHours = new double[] { 1, 2, 4, 6, 8, 12, 24 }[i]; Apply(); });
+        if (canSet && cl.Enabled)
         {
-            ToggleRow("Charge to full once",
-                AsusService.BypassActive
-                    ? "Active: the limit is lifted until the battery is full or you unplug."
-                    : "Lifts the limit until the battery is full, then puts it back. "
-                      + "Can be started on battery; it waits for the charger.",
-                AsusService.BypassActive, v =>
+            ToggleRow("Charging Cap Bypass",
+                AsusService.BypassUntil.HasValue
+                    ? $"Temporarily lifted until {AsusService.BypassUntil.Value.ToLocalTime():g}; click to restore now."
+                    : "Temporarily lift the cap to 100% for the selected number of hours.",
+                AsusService.BypassUntil.HasValue, v =>
                 {
-                    bool ac = _acOnline();
                     RunChargeAction(() =>
                     {
                         if (v)
                         {
-                            var r = AsusService.BeginChargeToFull(cl.Percent, ac);
-                            return r.Outcome is ChargeLimitOutcome.AppliedByFirmware or ChargeLimitOutcome.StoredForService
-                                ? "Charging to full once. " + r.Detail
-                                : "Could not start: " + r.Detail;
+                            var r = AsusService.BeginChargingCapBypass(cl.Percent, cl.BypassHours);
+                            return r.Detail;
                         }
-                        AsusService.CancelChargeToFull();
-                        return $"Cancelled; limit back to {cl.Percent}%.";
+                        AsusService.CancelChargingCapBypass();
+                        return "Charging Cap Bypass cancelled; restoring the normal limit.";
                     });
                 });
 

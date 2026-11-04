@@ -180,6 +180,9 @@ public sealed class ChargeLimitSettings
     /// makes the setting stick.
     /// </summary>
     public bool ReapplyOnPowerChange { get; set; } = true;
+
+    /// <summary>Charging Cap Bypass duration in hours (wall-clock time, including sleep).</summary>
+    public double BypassHours { get; set; } = 4;
 }
 
 public sealed class LoggingSettings
@@ -286,6 +289,8 @@ public static class ConfigStore
         c.Logging ??= new();
         c.Sections.PreferredRefreshRates ??= Array.Empty<int>();
         c.ChargeLimit.Percent = SnapChargePercent(c.ChargeLimit.Percent);
+        if (!double.IsFinite(c.ChargeLimit.BypassHours)) c.ChargeLimit.BypassHours = 4;
+        c.ChargeLimit.BypassHours = Math.Clamp(c.ChargeLimit.BypassHours, 0.5, 24);
         return c;
     }
 

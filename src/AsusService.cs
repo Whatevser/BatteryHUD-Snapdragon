@@ -32,9 +32,8 @@ public sealed record ChargeLimitResult(ChargeLimitOutcome Outcome, int Percent, 
 /// The ASUS battery charge limit, via the ATK ACPI interface that ASUS System Control
 /// Interface exposes.
 ///
-/// Two transports exist and both were confirmed present on a Vivobook S 15 S5507QAD
-/// (ARM64, SCI v3.2.72.0): the WMI class AsusAtkWmi_WMNB in root\wmi, and the device
-/// \\.\ATKACPI. The WMI one is used here - same methods, no handle to manage.
+/// The diagnostic build uses the native ATKACPI transport to set the threshold.
+/// The legacy WMI code remains only for read-only capability diagnostics.
 ///
 /// The interface is a generic "set device state" keyed on a numeric device ID. The charge
 /// limit is 0x00120057, confirmed from two independent sources: g-helper's AsusACPI.cs and
@@ -191,34 +190,19 @@ public static class AsusService
         }
     }
 
-    /// <summary>The ACPI route: the ATK class answers and the firmware has not refused the device.</summary>
-    public static bool FirmwareRouteUsable => IsElevated && (NativeAsusAcpi.Available || Available);
+    /// <summary>Experimental: only the native ATKACPI interface is used to set a limit.</summary>
+    public static bool FirmwareRouteUsable => IsElevated && NativeAsusAcpi.Available;
 
-    /// <summary>
-    /// The ASUS service route: ChargingRate in its registry store, which the service applies
-    /// on the next power event. Needs administrator to write, but not the ATK WMI class.
-    ///
-    /// This is the route that actually works on firmware that implements none of the
-    /// battery devices (measured: S5507QAD), so it must count as "can set the limit" on its
-    /// own. Treating firmware refusal as "cannot set a limit" was a regression.
-    /// </summary>
-    public static bool ServiceRouteUsable => IsElevated && ServiceStorePresent;
+    /// <summary>Registry writes are compatibility updates, not a firmware control route.</summary>
+    public static bool CanSetLimit => FirmwareRouteUsable;
 
-    /// <summary>True when at least one route to the charge limit can be used.</summary>
-    public static bool CanSetLimit => FirmwareRouteUsable || ServiceRouteUsable;
-
-    /// <summary>One plain sentence on why CanSetLimit is false, or null when it is true.</summary>
     public static string? WhyCannotSetLimit()
     {
         if (CanSetLimit) return null;
         if (!IsElevated)
-            return "BatteryHud is not running as administrator. Both the ASUS interface and the "
-                 + "ASUS service store refuse a normal process, so the limit cannot be changed.";
-        if (!ServiceStorePresent && !Available)
-            return "No ASUS charge-limit interface on this machine (no ATK WMI class, no ASUS "
-                 + "service store). Whatever already caps the battery keeps doing it.";
-        return "The firmware does not implement the ASUS charge-limit device and the ASUS "
-             + "service store is missing, so there is nowhere to write the limit. Set it in MyASUS.";
+            return "Run BatteryHud as administrator to access the native ASUS charging interface.";
+        return "Native ASUS ATKACPI is unavailable. This experimental build does not use WMI "
+             + "or registry-only writes to apply a charging limit.";
     }
 
     // ------------------------------------------------------------------ reading
@@ -250,53 +234,37 @@ public static class AsusService
 
     private static ChargeLimitResult SetLimitCore(int percent)
     {
-        if (Available) ScanCapabilitiesOnce();
-
+        // Deliberately mirror G-Helper's normal charging path: native ATKACPI DEVS.
+        // No WMI fallback on failure. A registry update alone never counts as applied.
         if (!CanSetLimit)
             return new ChargeLimitResult(ChargeLimitOutcome.Unavailable, percent,
-                WhyCannotSetLimit() ?? "No route to the charge limit.");
+                WhyCannotSetLimit() ?? "Native ASUS charging interface is unavailable.");
 
-        // 1. Mirror G-Helper: try the native ATKACPI DEVS transport first.
-        //    A failed WMI/DSTS probe is NOT proof that the native transport rejects the ID.
-        bool firmwareTook = false;
-        int rc = -1;
-        if (IsElevated)
+        int rc = NativeAsusAcpi.SetChargeLimit(percent);
+        if (rc != 1)
         {
-            rc = NativeAsusAcpi.SetChargeLimit(percent);
-            if (rc != 1 && Available)
-            {
-                Log.Info($"asus: ATKACPI returned {rc}; trying WMI DEVS fallback");
-                rc = InvokeDevs(DevIdChargeLimit, (uint)percent);
-            }
-            firmwareTook = rc == 1;
-            _firmwareImplementsLimit = firmwareTook ? true : null;
-            if (!firmwareTook)
-                Log.Warn($"asus: neither native ATKACPI nor WMI confirmed charge limit {percent}% (last rc={rc})");
+            Log.Warn($"asus: native ATKACPI rejected charge limit {percent}% (result={rc}); "
+                     + "the ASUS service store was not changed");
+            return new ChargeLimitResult(ChargeLimitOutcome.Failed, percent,
+                $"Native ATKACPI DEVS did not accept {percent}% (result={rc}). "
+                + "No WMI fallback or registry-only success was used.");
         }
 
-        // 2. The service's store, so it does not re-assert an older value over the top -
-        //    and, on firmware without the ACPI device, the only route that works at all.
+        _firmwareImplementsLimit = true;
+
+        // Cooperate with MyASUS by updating its stored preference only after the
+        // hardware command has been accepted. This does not stop ASUS services.
         string? storeError = WriteServiceLimit(percent);
-        bool stored = storeError is null;
-        if (stored) Log.Info($"asus: {ChargingRateValue} = {percent} written to the ASUS service store");
+        if (storeError is null)
+            Log.Info($"asus: native ATKACPI accepted {percent}%; ChargingRate synchronized");
+        else
+            Log.Warn($"asus: native ATKACPI accepted {percent}%, but ChargingRate sync failed: {storeError}");
 
-        if (firmwareTook)
-        {
-            return new ChargeLimitResult(ChargeLimitOutcome.AppliedByFirmware, percent,
-                stored ? "Applied by firmware; ASUS service updated to match."
-                       : $"Applied by firmware, but the ASUS service store was not updated ({storeError}), "
-                         + "so it may revert on the next power event.");
-        }
-
-        if (stored)
-        {
-            return new ChargeLimitResult(ChargeLimitOutcome.StoredForService, percent,
-                $"Wrote ASUS ChargingRate={percent}%, but firmware application is unconfirmed. "
-                + "Check whether the actual charging threshold changes.");
-        }
-
-        return new ChargeLimitResult(ChargeLimitOutcome.Failed, percent,
-            $"Could not write the limit: {storeError}.");
+        return new ChargeLimitResult(ChargeLimitOutcome.AppliedByFirmware, percent,
+            storeError is null
+                ? $"Native ATKACPI accepted {percent}%; ASUS ChargingRate synchronized."
+                : $"Native ATKACPI accepted {percent}%, but ASUS ChargingRate could not be updated "
+                  + $"({storeError}); ASUS software may override the limit.");
     }
 
     /// <summary>Null on success, otherwise a short reason fit for the UI.</summary>

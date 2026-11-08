@@ -184,8 +184,6 @@ public sealed class ChargeLimitSettings
     /// <summary>Charging Cap Bypass duration in hours (wall-clock time, including sleep).</summary>
     public double BypassHours { get; set; } = 4;
 
-    /// <summary>Experimental: stop ASUS Optimization when G-Helper is detected.</summary>
-    public bool AutoStopAsusOptimizationForGHelper { get; set; } = false;
 }
 
 public sealed class LoggingSettings

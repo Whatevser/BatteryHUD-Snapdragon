@@ -36,5 +36,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "atkacpi-test-${{ github.run_number }}"
-          gh release create $tag publish/win-arm64/BatteryHud.exe --prerelease --title "Experimental ASUS Charge Control ($tag)" --notes "Windows ARM64 framework-dependent test build. Requires .NET 10 Desktop Runtime ARM64. Native G-Helper-style ATKACPI DEVS with WMI fallback; manual ASUSOptimization stop/start; opt-in stop when G-Helper is running. Experimental: verify actual charge behavior, and remember stopping ASUSOptimization may affect MyASUS functionality." --target $env:GITHUB_SHA
+          gh release create $tag publish/win-arm64/BatteryHud.exe --prerelease --title "Experimental ASUS Charge Control ($tag)" --notes "Windows ARM64 framework-dependent test build. Requires .NET 10 Desktop Runtime ARM64. Native G-Helper-style ATKACPI DEVS only (no WMI fallback and no service stopping). ASUS Optimization remains untouched. Test actual charging behavior before depending on this build." --target $env:GITHUB_SHA
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

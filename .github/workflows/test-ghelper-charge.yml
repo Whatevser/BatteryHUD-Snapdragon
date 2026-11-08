@@ -1,0 +1,40 @@
+name: Test BatteryHud native ASUS charge control
+
+on:
+  push:
+    branches: [experimental-ghelper-charge]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build tiny framework-dependent Windows ARM64 EXE
+        shell: pwsh
+        run: |
+          dotnet publish src/BatteryHud.csproj -c Release -r win-arm64 --self-contained false -o publish/win-arm64 -p:PublishSingleFile=true -p:PublishTrimmed=false -p:DebugType=none -p:DebugSymbols=false -p:IncludeNativeLibrariesForSelfExtract=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path publish/win-arm64/BatteryHud.exe)) { throw 'Missing BatteryHud.exe' }
+          Get-Item publish/win-arm64/BatteryHud.exe | Select-Object Name,Length
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: BatteryHud-ATKACPI-test-win-arm64
+          path: publish/win-arm64/BatteryHud.exe
+          if-no-files-found: error
+      - name: Publish experimental prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "atkacpi-test-${{ github.run_number }}"
+          gh release create $tag publish/win-arm64/BatteryHud.exe --prerelease --title "Experimental ASUS Charge Control ($tag)" --notes "Windows ARM64 framework-dependent test build. Requires .NET 10 Desktop Runtime ARM64. Native G-Helper-style ATKACPI DEVS with WMI fallback; manual ASUSOptimization stop/start; opt-in stop when G-Helper is running. Experimental: verify actual charge behavior, and remember stopping ASUSOptimization may affect MyASUS functionality." --target $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

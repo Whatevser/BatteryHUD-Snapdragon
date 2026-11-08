@@ -65,28 +65,6 @@ public sealed class BatteryService : IDisposable
 
     public void UpdateConfig(AppConfig cfg) => _cfg = cfg;
 
-    // ------------------------------------------------------------ charge ceiling
-
-    /// <summary>
-    /// Fraction of a full pack the charger is allowed to reach: 0.80 when an 80% cap is
-    /// configured, 1.0 when the feature is off. Everything the user *sees* is scaled by
-    /// this; the raw readings underneath are left alone.
-    /// </summary>
-    public double Ceiling
-    {
-        get
-        {
-            var c = _cfg.ChargeLimit;
-            if (!c.ShowAsFull) return 1.0;
-            return Math.Clamp(c.Percent, 40, 100) / 100.0;
-        }
-    }
-
-    public bool CeilingActive => Ceiling < 0.999;
-
-    /// <summary>The percentage to display: the cap reads as 100%.</summary>
-    public double DisplayPercent(BatterySample s) => Math.Clamp(s.Percent / Ceiling, 0, 100);
-
     // ---------------------------------------------------------------- device open
 
     private void TryOpen()
@@ -363,8 +341,12 @@ public sealed class BatteryService : IDisposable
         lock (_gate) snap = _history.ToArray();
         if (snap.Length == 0) return 0;
 
-        int n = Math.Clamp(_cfg.General.RateSmoothingSamples, 1, snap.Length);
-        var window = snap.Skip(snap.Length - n).ToArray();
+        // Never mix charging/discharging measurements across an AC-source transition.
+        int start = snap.Length - 1;
+        while (start > 0 && snap[start - 1].AcOnline == snap[^1].AcOnline) start--;
+        var currentSource = snap.Skip(start).ToArray();
+        int n = Math.Clamp(_cfg.General.RateSmoothingSamples, 1, currentSource.Length);
+        var window = currentSource.Skip(currentSource.Length - n).ToArray();
 
         if (window.Any(s => s.RateKnown))
         {
@@ -373,9 +355,9 @@ public sealed class BatteryService : IDisposable
         }
 
         // Derived: dCapacity / dt.
-        var last = snap[^1];
+        var last = currentSource[^1];
         var target = last.Time.AddSeconds(-Math.Max(10, _cfg.General.DerivedRateWindowSeconds));
-        var first = snap.FirstOrDefault(s => s.Time >= target) ?? snap[0];
+        var first = currentSource.FirstOrDefault(s => s.Time >= target) ?? currentSource[0];
         double hours = (last.Time - first.Time).TotalHours;
         if (hours <= 0 || first.CapacityMwh == 0 || last.CapacityMwh == 0) return 0;
         return (last.CapacityMwh - (double)first.CapacityMwh) / hours; // mWh per hour = mW
@@ -396,10 +378,10 @@ public sealed class BatteryService : IDisposable
             return null;
         }
 
-        // When a charge cap is configured, "full" is the cap, so the countdown ends where
-        // charging actually stops rather than at a 100% the pack will never reach.
-        double target = full * Ceiling;
-        double mwh = rate > 0 ? (target - s.CapacityMwh) : s.CapacityMwh;
+        // Forecast to true full capacity. Hide charging ETA when an OEM cap has already
+        // stopped charging, even if the smoothed rate still appears positive.
+        if (rate > 0 && !s.Charging) return null;
+        double mwh = rate > 0 ? (full - s.CapacityMwh) : s.CapacityMwh;
         if (rate > 0 && mwh <= 0) return TimeSpan.Zero;
         double hours = mwh / Math.Abs(rate);
         if (hours <= 0 || hours > 72) return null;

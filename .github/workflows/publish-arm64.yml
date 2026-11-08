@@ -3,8 +3,9 @@ name: Publish lightweight BatteryHud (ARM64)
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, remove-charge-cap-v034]
     paths:
+      - 'src/**'
       - '.github/workflows/publish-arm64.yml'
 
 permissions:
@@ -22,6 +23,15 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Check removed charging code
+        shell: pwsh
+        run: |
+          if (Test-Path src/AsusService.cs) { throw 'Obsolete ASUS charging controller still exists' }
+          git grep -n -E 'AsusService|\.ChargeLimit|ShowAsFull|CeilingActive|DisplayPercent|ChargingCapBypass|CreateElevatedTask|RestartAsAdministrator' -- src
+          if ($LASTEXITCODE -eq 0) { throw 'Obsolete charging/elevation implementation remains' }
+          [xml]$proj = Get-Content -Raw src/BatteryHud.csproj
+          if ($proj.Project.PropertyGroup.Version -ne '0.3.4') { throw 'Expected version 0.3.4' }
+
       - name: Publish framework-dependent single-file ARM64
         shell: pwsh
         run: |
@@ -38,10 +48,11 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub release
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          $tag = "v0.3.3"
-          gh release create $tag publish/win-arm64/BatteryHud.exe --title "BatteryHud $tag (Windows ARM64)" --notes "Includes timed Charging Cap Bypass. Small framework-dependent single-file build for Windows ARM64. Requires the .NET 10 Desktop Runtime (ARM64) installed separately. This build has not yet been hardware-tested." --target $env:GITHUB_SHA
+          $tag = "v0.3.4"
+          gh release create $tag publish/win-arm64/BatteryHud.exe --title "BatteryHud $tag (Windows ARM64)" --notes "Charge control and 80%-as-100% rescaling removed; use MyASUS for limits and bypass. Uses real battery percentages and standard-user autostart. Small framework-dependent single-file Windows ARM64 executable; install .NET 10 Desktop Runtime ARM64 separately. Battery and display features are not hardware-verified on all laptops." --target $env:GITHUB_SHA
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

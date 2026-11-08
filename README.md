@@ -95,9 +95,8 @@ for CI. It only *runs* on Windows.
 
 - **Left-click** the tray icon → the flyout: charge, watts, graph, brightness, refresh rate,
   power mode. `Esc` or clicking away closes it.
-- **Right-click** the tray icon → menu: Settings, charge to full once (when a hardware limit
-  is set), *Windows Settings*, *Control Panel*, *System tray icons*, start with Windows, open
-  the config folder, exit.
+- **Right-click** the tray icon → menu: Settings, *Windows Settings*, *Control Panel*,
+  *System tray icons*, start with Windows, open the config folder, exit.
 - **Settings** is a real window with toggles and sliders. Every change applies instantly —
   no OK button, no restart. Editing `config.json` by hand applies instantly too, and an open
   Settings window is rebuilt to show the edited values. If the file is half-saved or has a
@@ -176,84 +175,24 @@ Do this from Windows. The tray menu has *System tray icons*, which opens the cla
 `shell:::{05d7b0f4-2121-4eff-bf6b-ed3f69b894d9}` — Windows 11 removed every link to it but the
 shell folder is still registered. Turn Power off there and it stays off.
 
-## Charge limit
+## Battery percentage and charging
 
-Two switches that do not depend on each other:
+BatteryHud always displays the **actual battery percentage** reported by Windows.
+It does not set charging limits, override them, or rescale an OEM-capped 80% into 100%.
+Use **MyASUS** to configure the charge limit and any temporary charge-to-full bypass.
 
-- **Limit charging to 80%** — asks the ASUS firmware to stop charging there.
-- **Show 80% as 100%** — display only, for when something else owns the cap and you would
-  rather not stare at a battery that never fills.
+Old `ChargeLimit` settings are removed from `config.json` when the new version first
+loads it. If you previously activated BatteryHud's bypass, check your desired cap in
+MyASUS when upgrading: BatteryHud deliberately makes **no** ASUS firmware or registry
+changes, including attempts to restore an old bypass.
 
-They are separate because the cap is usually owned by MyASUS, in which case only the second
-is actually yours to control.
+### Administrator permissions
 
-Both the ATK WMI class and the registry store need **administrator**; a non-elevated run gets
-"access denied" and the hardware half is unavailable.
-
-### Running as administrator
-
-- **Once:** right-click `BatteryHud.exe` → *Run as administrator*, or use **Restart as
-  administrator** in Settings → Charge limit. If a normal instance is already in the tray,
-  the elevated one now takes over from it. Before, it showed "already running" and quit,
-  leaving you on the non-admin instance.
-- **At every logon:** while running as administrator, turn *Start with Windows* off and on
-  again. From an elevated instance this creates a scheduled task, "BatteryHud", set to *run
-  with highest privileges* at logon: no UAC prompt, and it is allowed to start on battery.
-  The old `HKCU\...\Run` entry is removed so the app does not start twice. A Run entry can
-  never start anything elevated, which is why the limit used to stop working after a reboot.
-- The log's `started` line says `administrator: yes/no`, so you can check which you got.
-
-### How it works
-
-The limit is ASUS WMI device `0x00120057`, confirmed from two independent sources: g-helper's
-`AsusACPI.cs` and the Linux kernel's `asus-wmi` driver (`ASUS_WMI_CHARGE_THRESHOLD`). It is
-written through the `AsusAtkWmi_WMNB` class in `root\wmi`.
-
-BatteryHud writes it **two ways on purpose**:
-
-1. the ACPI call, immediate where the firmware implements the device;
-2. `ChargingRate` in the ASUS service's registry store.
-
-The second is not redundant. The ASUS service re-asserts its own stored limit on power
-transitions, so writing only the ACPI value gets silently reverted. Writing both makes them
-agree. g-helper does the same, for the same reason.
-
-The BIOS also clears the limit on every restart, so it is pushed again at startup and whenever
-the power source changes.
-
-80% is the only value the UI offers — it is what ASUS recommend and what their firmware is
-known to honour. `Percent` in `config.json` also takes 60 or 100, which ASUS also offer. Any
-other value is snapped to the nearest of the three when the file loads, and the corrected
-value is written back. This repairs the `79` an old build saved through a slider rounding bug.
-
-### Measured caveat
-
-On a Vivobook S 15 S5507QAD (ARM64, SCI v3.2.72.0) the ATK transport is fully present — the
-WMI class, `DEVS`/`DSTS` and `\\.\ATKACPI` all work when elevated — but the firmware
-implements **none** of the battery devices. A read-only `DSTS` sweep of
-`0x00120050`–`0x00120070` reports nothing implemented, and `DEVS 0x00120057` returns **0**,
-which in this interface means "device not supported" (1 = accepted).
-
-The cap still works on that machine, through route 2: BatteryHud writes `ChargingRate` to
-the ASUS service's store, and the service applies it on the next plug/unplug or resume.
-Settings says which route is in use. The switch is only dimmed when *neither* route can be
-used: not elevated, or no ASUS service store at all. (One earlier build dimmed it whenever
-the firmware refused the ACPI device, which hid the route that actually works.)
-
-The first ACPI refusal is remembered, so the ACPI call is not repeated on every change —
-otherwise the log fills with identical failures.
-
-BatteryHud never writes to a device ID whose meaning is unconfirmed: `DEVS` is a generic
-setter keyed on a number, and a wrong ID would poke an unrelated subsystem.
-
-### Charge to full once
-
-Lifts the limit until the battery is full, then restores it. Tray menu and Settings.
-
-ASUS have their own version (`InstantFullChargeTime` / `InstantFullChargeTimeout`, on a 24-hour
-timer) which BatteryHud does not use: writing 100 and restoring the saved value when the pack
-tops out is the same behaviour, is ours end to end, and ends when the battery is actually full
-rather than when an invisible timer expires. It also ends if you unplug.
+BatteryHud's remaining features run without requiring administrator elevation.
+Autostart uses `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for the current
+user. Existing elevated `BatteryHud` logon tasks from old versions are migrated to
+ordinary autostart automatically when launched elevated once; if the app is running
+without administrator rights, remove the legacy task from Task Scheduler manually.
 
 ## Appearance
 
@@ -389,7 +328,6 @@ src/
   TrayMenuWindow.cs    the right-click menu
   SettingsWindow.cs    the settings GUI
   ShellIntegration.cs  autostart and links to the Windows pages
-  AsusService.cs       ASUS charge limit over ATK WMI, plus charge-to-full-once
 ```
 
 Nothing is templated in XAML: every control draws itself in `OnRender`, so the whole look is
@@ -412,32 +350,24 @@ driven from `config.json` without resource dictionaries to fight.
 
 ## Changelog
 
+### 0.3.4
+
+- Removed ASUS charging-limit control, timed Charging Cap Bypass, and display-only 80%-as-100% rescaling.
+- Battery percentages, charging estimates and session statistics use the true Windows readings.
+- Dropped elevated startup-task creation and added migration to normal user autostart.
+- Fixed charging-rate smoothing across AC/discharge transitions, and opened the battery
+  interface read-only to avoid unnecessary privileges.
+- Preserved the small, framework-dependent Windows ARM64 .NET 10 build.
+
 ### 0.3.2
 
 - Added *Blur behind the glass*. With blur off, *Transparency* really makes the window
   see-through; with blur on it can only trade tint for Windows' fixed-strength blur.
-- The charge limit read "79%" because an old build saved 79 through a slider bug. Values
-  other than 60/80/100 are now snapped to the nearest one and saved back.
 
-### 0.3.1
+### 0.3.1 (historical)
 
-- Fixed: the charge limit was disabled on firmware without the ACPI charge-limit device
-  (e.g. Vivobook S 15 S5507QAD), although writing the ASUS service store works there. Both
-  routes count again; charge-to-full and re-apply are back too.
-- Fixed: starting as administrator while a normal instance was running left you on the
-  normal one. The elevated launch now takes over. Added *Restart as administrator*.
-- Fixed: *Start with Windows* always started without admin rights. From an elevated
-  instance it now uses a "run with highest privileges" logon task.
-- Fixed: an elevated start right after logon could cache "ASUS interface unavailable" for
-  the whole session. It retries now.
-- Fixed: failures said "run as administrator" even when elevated. They now give the real
-  reason (key missing, value did not stick, access denied).
-- Fixed: *Charge to full once* started on battery was cancelled a second later. It now waits
-  for the charger.
-- Settings no longer needs reopening: the charge-limit section updates itself when the probe
-  finishes, a limit is written or charge-to-full ends, and glass colour, transparency, frost
-  and corner radius apply to the open Settings window live. Limit writes run off the UI
-  thread.
+- Earlier ASUS charge-cap and elevated-autostart fixes, subsequently retired in 0.3.4.
+- Improved Settings updates and live appearance changes.
 
 ### 0.3.0 — .NET 10
 
@@ -455,7 +385,6 @@ driven from `config.json` without resource dictionaries to fight.
   locales.
 - Fixed: on a machine with no battery the device was re-enumerated and a warning logged
   every poll. Now it retries every 30 s and logs once.
-- Fixed: a startup race could make the ASUS charge-limit check report "not available".
 - Fixed: clicking into a colour's hex box and away again counted as a colour change, which
   for the accent colour turned *Follow Windows accent colour* off.
 - Fixed: a rejected refresh-rate change reverted to the rate active when the flyout opened,

@@ -192,7 +192,7 @@ public static class AsusService
     }
 
     /// <summary>The ACPI route: the ATK class answers and the firmware has not refused the device.</summary>
-    public static bool FirmwareRouteUsable => Available && _firmwareImplementsLimit != false;
+    public static bool FirmwareRouteUsable => IsElevated && (NativeAsusAcpi.Available || Available);
 
     /// <summary>
     /// The ASUS service route: ChargingRate in its registry store, which the service applies
@@ -256,24 +256,22 @@ public static class AsusService
             return new ChargeLimitResult(ChargeLimitOutcome.Unavailable, percent,
                 WhyCannotSetLimit() ?? "No route to the charge limit.");
 
-        // 1. ACPI, unless the firmware has already said it does not implement the device.
-        //    Re-asking on every change just fills the log with identical refusals.
+        // 1. Mirror G-Helper: try the native ATKACPI DEVS transport first.
+        //    A failed WMI/DSTS probe is NOT proof that the native transport rejects the ID.
         bool firmwareTook = false;
-        int rc = 0;
-        if (FirmwareRouteUsable)
+        int rc = -1;
+        if (IsElevated)
         {
-            rc = InvokeDevs(DevIdChargeLimit, (uint)percent);
+            rc = NativeAsusAcpi.SetChargeLimit(percent);
+            if (rc != 1 && Available)
+            {
+                Log.Info($"asus: ATKACPI returned {rc}; trying WMI DEVS fallback");
+                rc = InvokeDevs(DevIdChargeLimit, (uint)percent);
+            }
             firmwareTook = rc == 1;
-            if (!firmwareTook && _firmwareImplementsLimit is null)
-            {
-                _firmwareImplementsLimit = false;
-                Log.Warn($"asus: firmware does not implement 0x{DevIdChargeLimit:X8} " +
-                         "(DEVS returned " + rc + "); falling back to the ASUS service store");
-            }
-            else if (firmwareTook)
-            {
-                _firmwareImplementsLimit = true;
-            }
+            _firmwareImplementsLimit = firmwareTook ? true : null;
+            if (!firmwareTook)
+                Log.Warn($"asus: neither native ATKACPI nor WMI confirmed charge limit {percent}% (last rc={rc})");
         }
 
         // 2. The service's store, so it does not re-assert an older value over the top -
@@ -293,8 +291,8 @@ public static class AsusService
         if (stored)
         {
             return new ChargeLimitResult(ChargeLimitOutcome.StoredForService, percent,
-                $"Saved to the ASUS service ({percent}%). It takes effect on the next "
-                + "plug/unplug or resume.");
+                $"Wrote ASUS ChargingRate={percent}%, but firmware application is unconfirmed. "
+                + "Check whether the actual charging threshold changes.");
         }
 
         return new ChargeLimitResult(ChargeLimitOutcome.Failed, percent,
@@ -439,8 +437,8 @@ public static class AsusService
                 // Nothing in the battery subgroup exists, so the charge-limit device will
                 // not either. Recorded so the UI can say that plainly instead of offering
                 // a switch that cannot work.
-                _firmwareImplementsLimit = false;
-                Log.Info("asus DSTS scan: no device in 0x00120050-0x00120070 is implemented");
+                // A DSTS miss must not suppress a later native DEVS attempt.
+                Log.Info("asus DSTS scan: no battery-area DSTS entries; ATKACPI DEVS will still be tried");
             }
             else
             {

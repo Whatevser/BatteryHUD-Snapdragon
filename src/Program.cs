@@ -209,6 +209,9 @@ public sealed class HudApp : Application
 
         _lastAcOnline = sample.AcOnline;
 
+        // Experimental, opt-in; only stops ASUSOptimization while G-Helper is running.
+        AsusOptimizationControl.CheckGHelper(_cfg.ChargeLimit.AutoStopAsusOptimizationForGHelper);
+
         // The bypass is deadline-based, not battery-percentage-based.
         // Never block the UI polling thread with WMI or registry operations.
         System.Threading.Tasks.Task.Run(AsusService.TickChargingCapBypass);

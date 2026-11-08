@@ -23,18 +23,15 @@ public static class Program
         using var mutex = new Mutex(initiallyOwned: true, MutexName, out bool created);
         if (!created)
         {
-            // Started as administrator while a normal instance is already in the tray - the
-            // usual case, because "Start with Windows" launched that one unelevated. Simply
-            // refusing here left the user on the non-admin instance, which then said "not
-            // running as administrator" although they had just run it as administrator.
-            // So an elevated launch (or --replace) asks the running one to exit and takes over.
-            bool takeOver = AsusService.IsElevated || args.Contains("--replace");
+            // --replace intentionally takes over an existing instance when updating.
+            // The remaining battery and display features require no elevation.
+            bool takeOver = args.Contains("--replace");
             if (!(takeOver && TakeOver(mutex)))
             {
                 WinForms.MessageBox.Show(
                     takeOver
                         ? "BatteryHud is already running and did not hand over.\n\n"
-                          + "Exit it from its tray menu, then start BatteryHud as administrator again."
+                          + "Exit it from its tray menu, then start BatteryHud again."
                         : "BatteryHud is already running (look in the notification area).",
                     "BatteryHud", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Information);
                 return 1;
@@ -92,7 +89,6 @@ public sealed class HudApp : Application
     private System.Drawing.Icon? _currentIcon;
     private string _iconSignature = "";
     private string _appearanceSignature = "";
-    private bool? _lastAcOnline;
     private readonly string[] _args;
     private EventWaitHandle? _exitEvent;
     private RegisteredWaitHandle? _exitWait;
@@ -116,7 +112,6 @@ public sealed class HudApp : Application
         };
 
         _cfg = ConfigStore.Load();
-        AsusService.LoadBypassState();
         _themeWatcher = new ThemeWatcher();
         _pal = Palette.Build(_cfg, _themeWatcher.Current);
         _appearanceSignature = AppearanceSignature();
@@ -130,7 +125,7 @@ public sealed class HudApp : Application
         try
         {
             _powerWatcher = new PowerSourceWatcher();
-            _powerWatcher.SourceChanged += ac => Dispatcher.Invoke(() => OnPowerSourceChanged(ac));
+            _powerWatcher.SourceChanged += _ => Dispatcher.BeginInvoke(new Action(Tick));
         }
         catch (Exception ex) { Log.Warn($"power watcher: {ex.Message}"); }
 
@@ -151,14 +146,10 @@ public sealed class HudApp : Application
         {
             try { BrightnessService.GetInternal(); } catch { /* warm-up only */ }
             try { _ = PowerModeService.ApiAvailable; } catch { /* warm-up only */ }
-            try
-            {
-                // The BIOS clears the charge limit on every restart, so it has to be set
-                // again each run. Also logs which ACPI devices this firmware implements.
-                if (_cfg.ChargeLimit.Enabled) AsusService.Reapply(_cfg);
-                else AsusService.ScanCapabilitiesOnce();
-            }
-            catch (Exception ex) { Log.Warn($"asus startup: {ex.Message}"); }
+            // Legacy builds used an elevated logon task for charge control. Migrate it
+            // to normal per-user autostart when this process still has sufficient rights.
+            try { ShellIntegration.MigrateLegacyAutostart(); }
+            catch (Exception ex) { Log.Warn($"autostart migration: {ex.Message}"); }
         });
 
         // Lets a newer elevated launch ask this instance to step aside (see Program.TakeOver).
@@ -175,28 +166,8 @@ public sealed class HudApp : Application
         catch (Exception ex) { Log.Warn($"exit event: {ex.Message}"); }
 
         if (_args.Contains("--settings")) OpenSettings();
-        Log.Info($"started (administrator: {(AsusService.IsElevated ? "yes" : "no")}, "
-                 + $"{System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}, "
+        Log.Info($"started ({System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}, "
                  + $".NET {Environment.Version})");
-    }
-
-    /// <summary>Driven by WM_POWERBROADCAST, so this runs the instant the plug moves.</summary>
-    private void OnPowerSourceChanged(bool acOnline)
-    {
-        _lastAcOnline = acOnline;
-
-        // The ASUS service re-asserts its own stored limit across power transitions, so
-        // ours has to be pushed again or it quietly reverts.
-        if (_cfg.ChargeLimit.ReapplyOnPowerChange)
-        {
-            System.Threading.Tasks.Task.Run(() =>
-            {
-                try { AsusService.Reapply(_cfg); }
-                catch (Exception ex) { Log.Warn($"asus reapply: {ex.Message}"); }
-            });
-        }
-
-        Tick();
     }
 
     // -------------------------------------------------------------------- loop
@@ -207,19 +178,13 @@ public sealed class HudApp : Application
         try { sample = _battery.Poll(); }
         catch (Exception ex) { Log.Warn($"poll: {ex.Message}"); return; }
 
-        _lastAcOnline = sample.AcOnline;
-
-        // The bypass is deadline-based, not battery-percentage-based.
-        // Never block the UI polling thread with WMI or registry operations.
-        System.Threading.Tasks.Task.Run(AsusService.TickChargingCapBypass);
-
         UpdateTrayIcon(sample);
         _flyout?.Tick();
     }
 
     private void UpdateTrayIcon(BatterySample s)
     {
-        double shown = _battery.DisplayPercent(s);
+        double shown = s.Percent;
         string sig = $"{(int)Math.Round(shown)}|{s.Charging}|{s.AcOnline}|{_pal.TaskbarDark}|" +
                      $"{_cfg.Tray.IconStyle}|{_cfg.Tray.ChargingGlyph}|" +
                      $"{_cfg.Tray.ShowChargingGlyph}|{_cfg.Tray.ColorByState}|{_cfg.Tray.OutlineScale}|" +
@@ -244,7 +209,7 @@ public sealed class HudApp : Application
     /// <summary>"72% · 3h 50m left" / "72% · charging · 1h 12m to full" / "100% · plugged in".</summary>
     private string BuildTooltip(BatterySample s)
     {
-        int pct = (int)Math.Round(_battery.DisplayPercent(s));
+        int pct = (int)Math.Round(s.Percent);
         var remaining = _battery.TimeRemaining();
         double rate = _battery.SmoothedRateMw();
 
@@ -258,7 +223,7 @@ public sealed class HudApp : Application
         else if (s.AcOnline)
         {
             text = pct >= 99
-                ? (_battery.CeilingActive ? $"{pct}% · charged to limit" : $"{pct}% · fully charged")
+                ? $"{pct}% · fully charged"
                 : $"{pct}% · plugged in";
         }
         else
@@ -307,10 +272,6 @@ public sealed class HudApp : Application
         _menu = new TrayMenuWindow(_cfg, _pal, new TrayMenuActions
         {
             OpenSettings = OpenSettings,
-            ChargeToFullOnce = ToggleChargingCapBypass,
-            ChargeToFullAvailable = () => AsusService.CanSetLimit && _cfg.ChargeLimit.Enabled,
-            ChargeToFullActive = () => AsusService.BypassActive,
-            ChargeToFullUntil = () => AsusService.BypassUntil,
             OpenWindowsPowerSettings = ShellIntegration.OpenWindowsPowerSettings,
             OpenControlPanelPowerOptions = ShellIntegration.OpenControlPanelPowerOptions,
             OpenConfigFolder = ShellIntegration.OpenConfigFolder,
@@ -348,22 +309,6 @@ public sealed class HudApp : Application
 
     // ---------------------------------------------------------------- settings
 
-    /// <summary>Start or cancel the timed Charging Cap Bypass.</summary>
-    private void ToggleChargingCapBypass()
-    {
-        if (!_cfg.ChargeLimit.Enabled) return;
-        System.Threading.Tasks.Task.Run(() =>
-        {
-            try
-            {
-                if (AsusService.BypassUntil.HasValue) AsusService.CancelChargingCapBypass();
-                else AsusService.BeginChargingCapBypass(_cfg.ChargeLimit.Percent,
-                    _cfg.ChargeLimit.BypassHours);
-            }
-            catch (Exception ex) { Log.Warn($"Charging Cap Bypass: {ex.Message}"); }
-        });
-    }
-
     private void OpenSettings()
     {
         if (_settings is { IsVisible: true })
@@ -375,8 +320,7 @@ public sealed class HudApp : Application
         var window = new SettingsWindow(_cfg, _pal, SaveAndApply, ResetToDefaults,
             ShellIntegration.OpenConfigFolder,
             ShellIntegration.RunAtLoginEnabled,
-            () => ShellIntegration.SetRunAtLogin(!ShellIntegration.RunAtLoginEnabled()),
-            () => _lastAcOnline ?? false);
+            () => ShellIntegration.SetRunAtLogin(!ShellIntegration.RunAtLoginEnabled()));
         // Only forget the window if it is still the current one; an older instance closing
         // late must not orphan its replacement.
         window.Closed += (_, _) => { if (ReferenceEquals(_settings, window)) _settings = null; };

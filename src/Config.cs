@@ -17,7 +17,6 @@ public sealed class AppConfig
     public AppearanceSettings Appearance { get; set; } = new();
     public TraySettings Tray { get; set; } = new();
     public SectionSettings Sections { get; set; } = new();
-    public ChargeLimitSettings ChargeLimit { get; set; } = new();
     public LoggingSettings Logging { get; set; } = new();
 
     public AppConfig Clone()
@@ -133,58 +132,6 @@ public sealed class SectionSettings
     public int BrightnessStep { get; set; } = 5;
 }
 
-/// <summary>
-/// Rescales the displayed charge when an OEM utility caps charging below 100%.
-///
-/// Expressed in percent, deliberately. OEM charge caps are configured in percent, and the
-/// battery's FullChargedCapacity falls as the pack wears - so a threshold stored in Wh
-/// would slowly drift away from whatever the OEM tool is actually enforcing, while a
-/// percentage tracks it. Voltage would be worse still: the charge curve is nonlinear and
-/// moves with load and temperature.
-/// </summary>
-/// <summary>
-/// The charge limit. One switch, two effects, because wanting one without the other has
-/// never come up:
-///
-///   - tells the ASUS firmware to stop charging at Percent;
-///   - shows that as 100%, so the battery does not look permanently part-charged.
-///
-/// The second half works even when the first fails, which matters: if MyASUS already owns
-/// the cap, or the firmware refuses our write, the display is still right.
-/// </summary>
-public sealed class ChargeLimitSettings
-{
-    /// <summary>Ask the ASUS firmware to stop charging at Percent. Off by default.</summary>
-    public bool Enabled { get; set; } = false;
-
-    /// <summary>
-    /// Show Percent as 100%. Independent of Enabled on purpose: the cap is often set by
-    /// MyASUS rather than by us, and whether you want the display rescaled is a separate
-    /// question from who set the cap.
-    /// </summary>
-    public bool ShowAsFull { get; set; } = false;
-
-    /// <summary>
-    /// Where charging stops, and what reads as 100%. 80 is the only value the UI offers -
-    /// it is the one ASUS themselves recommend and the one their firmware is known to
-    /// honour. Editable here for anyone who wants 60, which ASUS also offers.
-    /// </summary>
-    public int Percent { get; set; } = 80;
-
-    /// <summary>Adds "78% actual" to the detail line, so nothing is hidden.</summary>
-    public bool ShowActual { get; set; } = true;
-
-    /// <summary>
-    /// Re-push the limit on power-source changes and at startup. The BIOS drops it on
-    /// every restart and the ASUS service can re-assert its own value, so this is what
-    /// makes the setting stick.
-    /// </summary>
-    public bool ReapplyOnPowerChange { get; set; } = true;
-
-    /// <summary>Charging Cap Bypass duration in hours (wall-clock time, including sleep).</summary>
-    public double BypassHours { get; set; } = 4;
-}
-
 public sealed class LoggingSettings
 {
     public bool CsvEnabled { get; set; } = false;
@@ -228,20 +175,6 @@ public static class ConfigStore
     /// defaults, because the next Settings change would then write those defaults over the
     /// user's file.
     /// </summary>
-    /// <summary>
-    /// ASUS offers 60, 80 and 100. Anything else is snapped to the nearest of those. This
-    /// mostly repairs the 79 that an old build saved: its slider showed a rounded "80%" but
-    /// stored the truncated value, and the label has read "79%" ever since.
-    /// </summary>
-    public static int SnapChargePercent(int percent)
-    {
-        int[] allowed = { 60, 80, 100 };
-        int best = 80;
-        foreach (int a in allowed)
-            if (Math.Abs(a - percent) < Math.Abs(best - percent)) best = a;
-        return best;
-    }
-
     public static AppConfig? TryLoad()
     {
         try
@@ -253,18 +186,28 @@ public static class ConfigStore
                 Save(fresh);
                 return fresh;
             }
-            var parsed = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(FilePath), Options);
+            string json = File.ReadAllText(FilePath);
+            var parsed = JsonSerializer.Deserialize<AppConfig>(json, Options);
             if (parsed is null) return null;
-            // JSON can null the section even though the property is non-nullable.
-            ChargeLimitSettings? onDisk = parsed.ChargeLimit;
-            int percentOnDisk = onDisk?.Percent ?? 80;
             var cfg = Normalize(parsed);
-            if (cfg.ChargeLimit.Percent != percentOnDisk)
+
+            // Old versions stored both ASUS hardware control and display remapping here.
+            // Drop that obsolete JSON section on the first load, without touching hardware.
+            using var doc = JsonDocument.Parse(json, new JsonDocumentOptions
             {
-                // Persist the repair so config.json stops saying 79. The reload this write
-                // triggers finds nothing left to fix, so it does not loop.
-                Log.Info($"config: charge limit {percentOnDisk}% is not an ASUS value; using {cfg.ChargeLimit.Percent}%");
-                Save(cfg);
+                AllowTrailingCommas = true,
+                CommentHandling = JsonCommentHandling.Skip,
+            });
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in doc.RootElement.EnumerateObject())
+                {
+                    if (!string.Equals(property.Name, "ChargeLimit", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    Log.Info("config: removing obsolete charge-limit configuration");
+                    Save(cfg);
+                    break;
+                }
             }
             return cfg;
         }
@@ -285,12 +228,8 @@ public static class ConfigStore
         c.Appearance ??= new();
         c.Tray ??= new();
         c.Sections ??= new();
-        c.ChargeLimit ??= new();
         c.Logging ??= new();
         c.Sections.PreferredRefreshRates ??= Array.Empty<int>();
-        c.ChargeLimit.Percent = SnapChargePercent(c.ChargeLimit.Percent);
-        if (!double.IsFinite(c.ChargeLimit.BypassHours)) c.ChargeLimit.BypassHours = 4;
-        c.ChargeLimit.BypassHours = Math.Clamp(c.ChargeLimit.BypassHours, 0.5, 24);
         return c;
     }
 

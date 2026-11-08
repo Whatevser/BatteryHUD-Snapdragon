@@ -486,14 +486,13 @@ public sealed class FlyoutWindow : HudWindow
         double rate = _battery.SmoothedRateMw();
         var info = _battery.Info;
 
-        // With a charge cap configured the cap reads as 100%; the raw value is still shown
-        // in the detail line so nothing is hidden.
-        double shown = _battery.DisplayPercent(s);
+        // Display actual battery percentage, without cap-based rescaling.
+        double shown = s.Percent;
 
         if (_percentText is not null) _percentText.Text = $"{shown:0}%";
 
         string state = s.Charging ? "Charging"
-            : s.AcOnline && shown >= 99 ? (_battery.CeilingActive ? "At limit" : "Full")
+            : s.AcOnline && shown >= 99 ? "Full"
             : s.AcOnline ? "Plugged in"
             : "On battery";
         if (_stateText is not null) _stateText.Text = state;
@@ -528,8 +527,6 @@ public sealed class FlyoutWindow : HudWindow
                 bits.Add($"{Fmt.Energy(s.CapacityMwh)} / {Fmt.Energy(info.FullChargedCapacity)}");
             if (s.VoltageMv > 0 && Math.Abs(rate) > 50)
                 bits.Add($"{Math.Abs(rate) / (s.VoltageMv / 1000.0) / 1000.0:0.00} A");
-            if (_battery.CeilingActive && Cfg.ChargeLimit.ShowActual)
-                bits.Add($"{s.Percent:0}% actual · {Cfg.ChargeLimit.Percent}% cap");
             _detailText.Text = string.Join("  ·  ", bits);
         }
 
@@ -565,7 +562,6 @@ public sealed class FlyoutWindow : HudWindow
         if (_sessionText is not null)
         {
             var (dur, dMwh, dPct, avg) = _battery.SessionStats();
-            dPct /= _battery.Ceiling;   // report the delta on the same scale as the headline
             string verb = _battery.SessionIsCharging ? "Charging" : "Discharging";
             _sessionText.Text = dur.TotalSeconds < 5
                 ? $"{verb} session starting…"

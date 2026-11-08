@@ -371,6 +371,26 @@ public sealed class SettingsWindow : HudWindow
                 cl.ReapplyOnPowerChange, v => { cl.ReapplyOnPowerChange = v; Apply(); });
         }
 
+        // Experimental service controls. Only ASUSOptimization is touched;
+        // service start type and all other ASUS services are left untouched.
+        AddNote($"ASUS Optimization: {AsusOptimizationControl.Status()}", 4, 3, 1.0, -1.5);
+        var serviceRow = NewRow();
+        var stopService = new PillButton("Stop ASUS Optimization", Pal, _font, _fs - 1, () =>
+        {
+            RunChargeAction(AsusOptimizationControl.Stop);
+        }, "Stop ASUS Optimization (does not disable its startup or stop other ASUS services)");
+        serviceRow.Children.Add(stopService);
+        var startService = new PillButton("Start service", Pal, _font, _fs - 1, () =>
+        {
+            RunChargeAction(AsusOptimizationControl.Start);
+        }, "Start ASUS Optimization again");
+        serviceRow.Children.Add(startService);
+        _body.Children.Add(serviceRow);
+        ToggleRow("Auto-stop ASUS Optimization when G-Helper runs",
+            "Experimental: check every 30 seconds while BatteryHud is running; requires administrator rights.",
+            cl.AutoStopAsusOptimizationForGHelper,
+            v => { cl.AutoStopAsusOptimizationForGHelper = v; Apply(); });
+
         if (_chargeBusy) AddNote("Applying…", 6, 0, 1.0, -1.5);
         else if (_chargeStatus.Length > 0) AddNote(_chargeStatus, 6, 0, 1.0, -1.5);
 

@@ -3,7 +3,7 @@ name: Publish lightweight BatteryHud (ARM64)
 on:
   workflow_dispatch:
   push:
-    branches: [main, remove-charge-cap-v034]
+    branches: [main]
     paths:
       - 'src/**'
       - '.github/workflows/publish-arm64.yml'
@@ -32,7 +32,39 @@ jobs:
           if ($LASTEXITCODE -ne 1) { throw "Charging-code scan failed with code $LASTEXITCODE" }
           $global:LASTEXITCODE = 0
           [xml]$proj = Get-Content -Raw src/BatteryHud.csproj
-          if ($proj.Project.PropertyGroup.Version -ne '0.3.4') { throw 'Expected version 0.3.4' }
+          if ($proj.Project.PropertyGroup.Version -notmatch '^\d+\.\d+\.\d+
+
+      - name: Publish framework-dependent single-file ARM64
+        shell: pwsh
+        run: |
+          dotnet publish src/BatteryHud.csproj --configuration Release --runtime win-arm64 --self-contained false --output publish/win-arm64 -p:PublishSingleFile=true -p:PublishTrimmed=false -p:DebugType=none -p:DebugSymbols=false -p:IncludeNativeLibrariesForSelfExtract=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem publish/win-arm64 | Format-Table Name,Length
+          if (-not (Test-Path publish/win-arm64/BatteryHud.exe)) { throw 'BatteryHud.exe not found' }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BatteryHud-win-arm64-framework-dependent
+          path: publish/win-arm64/BatteryHud.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          [xml]$proj = Get-Content -Raw src/BatteryHud.csproj
+          $tag = "v$($proj.Project.PropertyGroup.Version)"
+          gh release view $tag --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag already exists; leaving the published binary unchanged."
+            exit 0
+          }
+          gh release create $tag publish/win-arm64/BatteryHud.exe --title "BatteryHud $tag (Windows ARM64)" --notes "Charge control and 80%-as-100% rescaling removed; use MyASUS for limits and bypass. Uses real battery percentages and standard-user autostart. Small framework-dependent single-file Windows ARM64 executable; install .NET 10 Desktop Runtime ARM64 separately. Battery and display features are not hardware-verified on all laptops." --target $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+) { throw 'Invalid project version' }
 
       - name: Publish framework-dependent single-file ARM64
         shell: pwsh

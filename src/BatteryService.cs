@@ -75,7 +75,9 @@ public sealed class BatteryService : IDisposable
             try
             {
                 var h = Native.CreateFile(path,
-                    Native.GENERIC_READ | Native.GENERIC_WRITE,
+                    // All three battery IOCTLs used here require FILE_READ_ACCESS only.
+                    // Avoid unnecessary write permission, which can fail for normal users.
+                    Native.GENERIC_READ,
                     Native.FILE_SHARE_READ | Native.FILE_SHARE_WRITE,
                     IntPtr.Zero, Native.OPEN_EXISTING, Native.FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
                 if (h.IsInvalid) { h.Dispose(); continue; }

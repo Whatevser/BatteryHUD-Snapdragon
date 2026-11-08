@@ -29,6 +29,8 @@ jobs:
           if (Test-Path src/AsusService.cs) { throw 'Obsolete ASUS charging controller still exists' }
           git grep -n -E 'AsusService|\.ChargeLimit|ShowAsFull|CeilingActive|DisplayPercent|ChargingCapBypass|CreateElevatedTask|RestartAsAdministrator' -- src
           if ($LASTEXITCODE -eq 0) { throw 'Obsolete charging/elevation implementation remains' }
+          if ($LASTEXITCODE -ne 1) { throw "Charging-code scan failed with code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
           [xml]$proj = Get-Content -Raw src/BatteryHud.csproj
           if ($proj.Project.PropertyGroup.Version -ne '0.3.4') { throw 'Expected version 0.3.4' }
 

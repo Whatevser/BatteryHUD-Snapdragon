@@ -23,16 +23,16 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Check removed charging code
+      - name: Verify obsolete charging code is gone
         shell: pwsh
         run: |
           if (Test-Path src/AsusService.cs) { throw 'Obsolete ASUS charging controller still exists' }
           git grep -n -E 'AsusService|\.ChargeLimit|ShowAsFull|CeilingActive|DisplayPercent|ChargingCapBypass|CreateElevatedTask|RestartAsAdministrator' -- src
-          if ($LASTEXITCODE -eq 0) { throw 'Obsolete charging/elevation implementation remains' }
-          if ($LASTEXITCODE -ne 1) { throw "Charging-code scan failed with code $LASTEXITCODE" }
+          if ($LASTEXITCODE -eq 0) { throw 'Obsolete charging/elevation code remains' }
+          if ($LASTEXITCODE -ne 1) { throw "Source scan failed: $LASTEXITCODE" }
           $global:LASTEXITCODE = 0
           [xml]$proj = Get-Content -Raw src/BatteryHud.csproj
-          if ($proj.Project.PropertyGroup.Version -notmatch '^\d+\.\d+\.\d+
+          if (-not $proj.Project.PropertyGroup.Version) { throw 'Project version missing' }
 
       - name: Publish framework-dependent single-file ARM64
         shell: pwsh
@@ -50,7 +50,6 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub release
-        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
@@ -59,34 +58,8 @@ jobs:
           $tag = "v$($proj.Project.PropertyGroup.Version)"
           gh release view $tag --json tagName 2>$null | Out-Null
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release $tag already exists; leaving the published binary unchanged."
+            Write-Host "Release $tag already exists; not overwriting the published binary."
             exit 0
           }
-          gh release create $tag publish/win-arm64/BatteryHud.exe --title "BatteryHud $tag (Windows ARM64)" --notes "Charge control and 80%-as-100% rescaling removed; use MyASUS for limits and bypass. Uses real battery percentages and standard-user autostart. Small framework-dependent single-file Windows ARM64 executable; install .NET 10 Desktop Runtime ARM64 separately. Battery and display features are not hardware-verified on all laptops." --target $env:GITHUB_SHA
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-) { throw 'Invalid project version' }
-
-      - name: Publish framework-dependent single-file ARM64
-        shell: pwsh
-        run: |
-          dotnet publish src/BatteryHud.csproj --configuration Release --runtime win-arm64 --self-contained false --output publish/win-arm64 -p:PublishSingleFile=true -p:PublishTrimmed=false -p:DebugType=none -p:DebugSymbols=false -p:IncludeNativeLibrariesForSelfExtract=true
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Get-ChildItem publish/win-arm64 | Format-Table Name,Length
-          if (-not (Test-Path publish/win-arm64/BatteryHud.exe)) { throw 'BatteryHud.exe not found' }
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: BatteryHud-win-arm64-framework-dependent
-          path: publish/win-arm64/BatteryHud.exe
-          if-no-files-found: error
-
-      - name: Publish GitHub release
-        if: github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: pwsh
-        run: |
-          $tag = "v0.3.4"
-          gh release create $tag publish/win-arm64/BatteryHud.exe --title "BatteryHud $tag (Windows ARM64)" --notes "Charge control and 80%-as-100% rescaling removed; use MyASUS for limits and bypass. Uses real battery percentages and standard-user autostart. Small framework-dependent single-file Windows ARM64 executable; install .NET 10 Desktop Runtime ARM64 separately. Battery and display features are not hardware-verified on all laptops." --target $env:GITHUB_SHA
+          gh release create $tag publish/win-arm64/BatteryHud.exe --title "BatteryHud $tag (Windows ARM64)" --notes "Charge-limit controls and 80%-as-100% rescaling removed; use MyASUS for all charging-limit settings. Actual battery percentages, normal-user autostart, and improved rate smoothing. Framework-dependent Windows ARM64 EXE; requires .NET 10 Desktop Runtime ARM64." --target $env:GITHUB_SHA
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -20,17 +20,14 @@ public sealed class SettingsWindow : HudWindow
     private readonly Action _openConfigFolder;
     private readonly Func<bool> _runAtLoginEnabled;
     private readonly Action _toggleRunAtLogin;
-    private readonly Func<bool> _acOnline;
     private readonly FontFamily _font;
     private readonly double _fs;
     private StackPanel _body = null!;
 
     public SettingsWindow(AppConfig cfg, Palette pal, Action apply, Action resetDefaults,
-        Action openConfigFolder, Func<bool> runAtLoginEnabled, Action toggleRunAtLogin,
-        Func<bool> acOnline)
+        Action openConfigFolder, Func<bool> runAtLoginEnabled, Action toggleRunAtLogin)
         : base(cfg, pal, toolWindow: false)
     {
-        _acOnline = acOnline;
         _apply = apply;
         _resetDefaults = resetDefaults;
         _openConfigFolder = openConfigFolder;
@@ -46,15 +43,7 @@ public sealed class SettingsWindow : HudWindow
         Content = BuildRoot();
         KeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
 
-        // The interface probe and DSTS scan finish in the background after startup, and
-        // charge-to-full ends on its own. Follow all of it instead of showing whatever was
-        // true when the window was built.
-        AsusService.StateChanged += OnAsusStateChanged;
-        Closed += (_, _) => AsusService.StateChanged -= OnAsusStateChanged;
     }
-
-    private void OnAsusStateChanged()
-        => Dispatcher.BeginInvoke(new Action(() => { if (IsVisible) RebuildChargeLimit(); }));
 
     public void ShowCentred()
     {
@@ -225,9 +214,6 @@ public sealed class SettingsWindow : HudWindow
         ToggleRow("Power mode", "Efficiency / Balanced / Performance for the current power source",
             s.PowerMode, v => { s.PowerMode = v; Apply(); });
 
-        // --------------------------------------------------------- charge limit
-        BuildChargeLimitSection();
-
         // ----------------------------------------------------------- behaviour
         Header("Behaviour");
 
@@ -243,13 +229,10 @@ public sealed class SettingsWindow : HudWindow
         ToggleRow("Close flyout when it loses focus", null, g.CloseOnFocusLost, v => { g.CloseOnFocusLost = v; Apply(); });
 
         ToggleRow("Start with Windows",
-            AsusService.IsElevated
-                ? "Turned on from here, it starts with administrator rights (no UAC prompt), "
-                  + "so the charge limit works after a reboot."
-                : ShellIntegration.RunAtLoginElevated()
-                    ? "Starts with administrator rights."
-                    : "Starts without administrator rights. To start elevated, restart as "
-                      + "administrator and turn this off and on again.",
+            ShellIntegration.LegacyElevatedTaskPresent()
+                ? "An old elevated startup task remains. It is migrated automatically if BatteryHud "
+                  + "runs as administrator once; otherwise remove the BatteryHud task in Task Scheduler."
+                : "Starts with Windows for this user, without administrator rights.",
             _runAtLoginEnabled(), _ => _toggleRunAtLogin());
 
         ToggleRow("Log samples to CSV", "For comparing chargers in a spreadsheet afterwards",
@@ -264,175 +247,6 @@ public sealed class SettingsWindow : HudWindow
         note.Opacity = 0.75;
         note.Margin = new Thickness(0, 14, 0, 4);
         _body.Children.Add(note);
-    }
-
-    // ------------------------------------------------------------ charge limit
-
-    private StackPanel _chargeHost = null!;
-    private string _chargeStatus = "";
-    private bool _chargeBusy;
-
-    /// <summary>
-    /// The charge limit, as two switches that do not depend on each other: one sets the
-    /// limit, one rescales the display. Built into its own panel so it can be rebuilt in
-    /// place whenever anything about it changes.
-    /// </summary>
-    private void BuildChargeLimitSection()
-    {
-        Header("Charge limit");
-        _chargeHost = new StackPanel();
-        _body.Children.Add(_chargeHost);
-        RebuildChargeLimit();
-    }
-
-    /// <summary>Re-renders the section from current state. Safe to call at any time.</summary>
-    private void RebuildChargeLimit()
-    {
-        // The row helpers all append to _body; point it at the section while building.
-        var outer = _body;
-        _body = _chargeHost;
-        _chargeHost.Children.Clear();
-        try { BuildChargeLimitRows(); }
-        catch (Exception ex) { Log.Warn($"charge limit section: {ex}"); }
-        finally { _body = outer; }
-    }
-
-    private void BuildChargeLimitRows()
-    {
-        var cl = Cfg.ChargeLimit;
-        bool canSet = AsusService.CanSetLimit;
-        bool elevated = AsusService.IsElevated;
-
-        int? stored = AsusService.ReadLimit();
-        if (stored.HasValue)
-            AddNote($"The ASUS service currently has the limit at {stored.Value}%.", 2, 4, 1.0, -1.5);
-
-        // ---- hardware
-        string hint = !canSet ? "Not available right now - see below."
-                    : AsusService.FirmwareRouteUsable ? $"Asks the firmware to stop charging at {cl.Percent}%."
-                    : $"Saved to the ASUS service, which stops charging at {cl.Percent}%. "
-                      + "Takes effect on the next plug/unplug or resume.";
-        var hw = ToggleRowReturning($"Limit charging to {cl.Percent}%", hint, cl.Enabled, v =>
-        {
-            if (!v && AsusService.BypassUntil.HasValue)
-                AsusService.CancelChargingCapBypass();
-            cl.Enabled = v;
-            Apply();
-            if (!canSet)
-            {
-                _chargeStatus = "Saved. It will be applied once BatteryHud can reach the ASUS limit.";
-                RebuildChargeLimit();
-                return;
-            }
-            RunChargeAction(() =>
-            {
-                var r = AsusService.SetLimitSerialized(v ? cl.Percent : AsusService.MaxLimit);
-                return (v ? "" : "Limit removed. ") + r.Detail;
-            });
-        });
-        if (!canSet || _chargeBusy) hw.Opacity = 0.5;
-
-        // ---- display, deliberately independent of the above
-        ToggleRow($"Show {cl.Percent}% as 100%",
-            "Display only. Use it when something else caps the battery and you would "
-            + "rather not stare at a number that never reaches full.",
-            cl.ShowAsFull, v => { cl.ShowAsFull = v; Apply(); });
-
-        ToggleRow("Show the true percentage too", "Adds \"78% actual\" to the detail line",
-            cl.ShowActual, v => { cl.ShowActual = v; Apply(); });
-
-        // ---- timed bypass (no battery percentage or charger checks)
-        SegmentRow("Charging Cap Bypass duration",
-            new[] { "1 h", "2 h", "4 h", "6 h", "8 h", "12 h", "24 h" },
-            Math.Max(0, Array.IndexOf(new double[] { 1, 2, 4, 6, 8, 12, 24 }, cl.BypassHours)),
-            i => { cl.BypassHours = new double[] { 1, 2, 4, 6, 8, 12, 24 }[i]; Apply(); });
-        if (canSet && cl.Enabled)
-        {
-            ToggleRow("Charging Cap Bypass",
-                AsusService.BypassUntil.HasValue
-                    ? $"Temporarily lifted until {AsusService.BypassUntil.Value.ToLocalTime():g}; click to restore now."
-                    : "Temporarily lift the cap to 100% for the selected number of hours.",
-                AsusService.BypassUntil.HasValue, v =>
-                {
-                    RunChargeAction(() =>
-                    {
-                        if (v)
-                        {
-                            var r = AsusService.BeginChargingCapBypass(cl.Percent, cl.BypassHours);
-                            return r.Detail;
-                        }
-                        AsusService.CancelChargingCapBypass();
-                        return "Charging Cap Bypass cancelled; restoring the normal limit.";
-                    });
-                });
-
-            ToggleRow("Re-apply after plug/unplug and restart",
-                "The BIOS drops the limit on restart and the ASUS service can overwrite it.",
-                cl.ReapplyOnPowerChange, v => { cl.ReapplyOnPowerChange = v; Apply(); });
-        }
-
-        if (_chargeBusy) AddNote("Applying…", 6, 0, 1.0, -1.5);
-        else if (_chargeStatus.Length > 0) AddNote(_chargeStatus, 6, 0, 1.0, -1.5);
-
-        // ---- say plainly why the hardware half is off, when it is
-        string? why = AsusService.WhyCannotSetLimit();
-        if (why is not null) AddNote(why, 8, 0, 0.8, -2);
-
-        if (!elevated)
-        {
-            var row = NewRow();
-            var restart = new PillButton("Restart as administrator", Pal, _font, _fs - 1, () =>
-            {
-                if (ShellIntegration.RestartAsAdministrator(openSettings: true))
-                {
-                    _chargeStatus = "Restarting as administrator…";
-                }
-                else
-                {
-                    _chargeStatus = "Restart cancelled - the UAC prompt was declined or failed.";
-                }
-                RebuildChargeLimit();
-            }, "Starts BatteryHud elevated (UAC prompt) and closes this instance");
-            restart.HorizontalAlignment = HorizontalAlignment.Left;
-            row.Children.Add(restart);
-            _body.Children.Add(row);
-        }
-    }
-
-    /// <summary>
-    /// WMI and the registry write-and-verify can take a second or more, so they run off the
-    /// UI thread; the section shows "Applying…" and rebuilds with the outcome.
-    /// </summary>
-    private void RunChargeAction(Func<string> action)
-    {
-        if (_chargeBusy) return;
-        _chargeBusy = true;
-        RebuildChargeLimit();
-        System.Threading.Tasks.Task.Run(() =>
-        {
-            string text;
-            try { text = action(); }
-            catch (Exception ex)
-            {
-                Log.Warn($"charge limit: {ex}");
-                text = "Could not change the limit - see batteryhud.log.";
-            }
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                _chargeBusy = false;
-                _chargeStatus = text;
-                if (IsVisible) RebuildChargeLimit();
-            }));
-        });
-    }
-
-    private void AddNote(string text, double top, double bottom, double opacity, double sizeDelta)
-    {
-        var t = Ui.Text(text, Pal.SubtleBrush, _fs + sizeDelta, _font);
-        t.TextWrapping = TextWrapping.Wrap;
-        t.Opacity = opacity;
-        t.Margin = new Thickness(0, top, 0, bottom);
-        _body.Children.Add(t);
     }
 
     private void Apply()

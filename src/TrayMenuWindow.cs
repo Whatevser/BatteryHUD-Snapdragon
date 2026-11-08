@@ -9,10 +9,6 @@ namespace BatteryHud;
 public sealed class TrayMenuActions
 {
     public required Action OpenSettings { get; init; }
-    public required Action ChargeToFullOnce { get; init; }
-    public required Func<bool> ChargeToFullAvailable { get; init; }
-    public required Func<bool> ChargeToFullActive { get; init; }
-    public required Func<DateTimeOffset?> ChargeToFullUntil { get; init; }
     public required Action OpenWindowsPowerSettings { get; init; }
     public required Action OpenControlPanelPowerOptions { get; init; }
     public required Action OpenConfigFolder { get; init; }
@@ -60,16 +56,6 @@ public sealed class TrayMenuWindow : HudWindow
         root.Child = stack;
 
         stack.Children.Add(new MenuRow("", "Settings", Pal, _font, fs, () => Run(_actions.OpenSettings)));
-
-        if (_actions.ChargeToFullAvailable())
-        {
-            stack.Children.Add(Ui.Separator(Pal.SeparatorBrush, 4));
-            bool active = _actions.ChargeToFullActive();
-            stack.Children.Add(new MenuRow(active ? "✓" : "",
-                active ? $"Charging Cap Bypass (until {_actions.ChargeToFullUntil()?.ToLocalTime():HH:mm})"
-                       : $"Charging Cap Bypass ({Cfg.ChargeLimit.BypassHours:g}h)",
-                Pal, _font, fs, () => Run(_actions.ChargeToFullOnce)));
-        }
 
         stack.Children.Add(Ui.Separator(Pal.SeparatorBrush, 4));
 
